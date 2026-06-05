@@ -10,6 +10,8 @@ The CFDE REVEAL Knowledge Graph connects biological processes and genes to human
 
 ## File Schema
 
+The full graph is accessible from: https://dig-knowledge-graph.s3.us-east-1.amazonaws.com/raw/cfde_kg_v1.csv.gz
+
 The graph is stored as an edge list CSV (total edges: **30,002,794**) with one row per edge.
 
 | Column | Description |
