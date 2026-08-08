@@ -10,6 +10,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from dd_download import DataDownloader
+from dd_build_db import DatabaseBuilder
 
 # Configure logging
 logging.basicConfig(
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 def main():
     """Main entry point."""
     parser = ArgumentParser(
-        description="Download and extract CFDE data from DataDistillerySources.tsv"
+        description="CFDE Data Distillery - Download, extract, and build knowledge graph database"
     )
     parser.add_argument(
         "-d",
@@ -40,11 +41,27 @@ def main():
     )
     parser.add_argument(
         "-f",
-        "--folder",
+        "--download-folder",
         type=str,
         default="data/download",
-        dest="folder",
-        help="Output folder for extracted files (default: data/download)",
+        dest="download_folder",
+        help="Folder for downloaded and extracted files (default: data/download)",
+    )
+    parser.add_argument(
+        "-i",
+        "--input-folder",
+        type=str,
+        default="data/download",
+        dest="input_folder",
+        help="Input folder with CSV files for processing (default: data/download)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default="data/ddkg.sqlite",
+        dest="output",
+        help="Output SQLite database file (default: data/ddkg.sqlite)",
     )
     parser.add_argument(
         "-l",
@@ -52,6 +69,13 @@ def main():
         type=str,
         dest="log",
         help="Log file path (optional)",
+    )
+    parser.add_argument(
+        "-O",
+        "--force-clean-db",
+        action="store_true",
+        dest="force_clean_db",
+        help="Remove old database and start fresh",
     )
     parser.add_argument(
         "-v",
@@ -74,23 +98,30 @@ def main():
         file_handler.setFormatter(formatter)
         logging.getLogger().addHandler(file_handler)
 
-    # Check if either download flag is set
-    if not args.download and not args.force_download:
-        parser.print_help()
-        sys.exit(0)
+    # Download if requested
+    if args.download or args.force_download:
+        downloader = DataDownloader()
+        try:
+            downloader.download_and_extract_all(
+                output_dir=args.download_folder,
+                force_download=args.force_download,
+            )
+        except KeyboardInterrupt:
+            logger.info("Download interrupted by user")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            sys.exit(1)
 
-    # Create downloader and run
-    downloader = DataDownloader()
+    # Always build the database
+    builder = DatabaseBuilder(db_path=args.output, force_clean_db=args.force_clean_db)
     try:
-        downloader.download_and_extract_all(
-            output_dir=args.folder,
-            force_download=args.force_download,
-        )
+        builder.build(data_folder=args.input_folder)
     except KeyboardInterrupt:
-        logger.info("Download interrupted by user")
+        logger.info("Build interrupted by user")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Build error: {e}")
         sys.exit(1)
 
 
