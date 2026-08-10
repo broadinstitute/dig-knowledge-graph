@@ -83,6 +83,13 @@ def main():
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "-I",
+        "--all-folders",
+        action="store_true",
+        dest="process_all",
+        help="Process all downloaded/extracted folders in the download folder",
+    )
 
     args = parser.parse_args()
 
@@ -99,13 +106,20 @@ def main():
         logging.getLogger().addHandler(file_handler)
 
     # Download if requested
+    downloaded = False
     if args.download or args.force_download:
+        # Ensure download folder exists
+        download_path = Path(args.download_folder)
+        download_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Using download folder: {download_path.resolve()}")
+        
         downloader = DataDownloader()
         try:
             downloader.download_and_extract_all(
                 output_dir=args.download_folder,
                 force_download=args.force_download,
             )
+            downloaded = True
         except KeyboardInterrupt:
             logger.info("Download interrupted by user")
             sys.exit(1)
@@ -113,16 +127,66 @@ def main():
             logger.error(f"Download error: {e}")
             sys.exit(1)
 
-    # Always build the database
+    # Only build database if we have data to process
+    should_build = (
+        downloaded or 
+        args.process_all or 
+        Path(args.input_folder).exists()
+    )
+    
+    if not should_build:
+        logger.warning(
+            f"No data to process. "
+            f"Use -d/-D to download files, -I to process all folders, "
+            f"or -i with an existing folder path."
+        )
+        sys.exit(0)
+
+    # Build the database
     builder = DatabaseBuilder(db_path=args.output, force_clean_db=args.force_clean_db)
-    try:
-        builder.build(data_folder=args.input_folder)
-    except KeyboardInterrupt:
-        logger.info("Build interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Build error: {e}")
-        sys.exit(1)
+    
+    if args.process_all:
+        # Process all folders found in download_folder
+        logger.info(f"Processing all folders in {args.download_folder}")
+        download_path = Path(args.download_folder)
+        
+        # Create folder if it doesn't exist (will be empty, checked below)
+        download_path.mkdir(parents=True, exist_ok=True)
+        
+        # Find all subdirectories that contain CSV files
+        csv_folders = set()
+        for csv_file in download_path.rglob("*.nodes.csv"):
+            # Add the top-level folder under download_path
+            csv_folders.add(csv_file.parent)
+        
+        if not csv_folders:
+            logger.warning(f"No CSV files found in {download_path}")
+            sys.exit(1)
+        
+        logger.info(f"Found {len(csv_folders)} folder(s) with CSV files")
+        
+        # Process all folders into the same database
+        try:
+            for folder in sorted(csv_folders):
+                logger.info(f"Processing {folder.name}...")
+                builder.build(data_folder=str(folder))
+        except KeyboardInterrupt:
+            logger.info("Build interrupted by user")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Build error: {e}")
+            sys.exit(1)
+    else:
+        # Process single folder specified by -i
+        logger.info(f"Processing {args.input_folder}")
+        try:
+            builder.build(data_folder=args.input_folder)
+        except KeyboardInterrupt:
+            logger.info("Build interrupted by user")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Build error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
