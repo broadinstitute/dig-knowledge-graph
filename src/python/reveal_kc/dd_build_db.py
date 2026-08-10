@@ -5,10 +5,12 @@ This module creates and populates a SQLite database with nodes, edges, and xref 
 """
 
 import csv
+import json
 import logging
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,94 @@ class DatabaseBuilder:
         self.force_clean_db = force_clean_db
         self.conn = None
         self.cursor = None
+        self.xref_config, self.xref_exclude = self._load_xref_config()
+
+    def _load_xref_config(self):
+        """
+        Load and parse xref processing and exclusion configuration.
+        
+        Returns tuple of (processing_map, exclude_map):
+            - processing_map: dict mapping (sab, source) -> processing_config
+            - exclude_map: dict mapping sab -> list of sources to exclude
+        """
+        config_file = Path(__file__).parent / "xref_config.json"
+        processing_map = {}
+        exclude_map = {}
+        
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    logger.debug(f"Loaded xref config from {config_file}")
+                    
+                    # Build lookup map: (sab, source) -> processing_config
+                    for rule in config.get('xref_processing', []):
+                        proc_type = rule.get('type')
+                        sources_by_sab = rule.get('sources', {})
+                        
+                        for sab, source_list in sources_by_sab.items():
+                            for source in source_list:
+                                key = (sab, source)
+                                processing_map[key] = {
+                                    'type': proc_type,
+                                    'description': rule.get('description', '')
+                                }
+                    
+                    logger.debug(f"Built processing map with {len(processing_map)} rules")
+                    
+                    # Load xref exclusions: sab -> list of sources to skip
+                    exclude_config = config.get('xref_exclude', {})
+                    for sab, sources in exclude_config.items():
+                        if isinstance(sources, list):
+                            exclude_map[sab] = [s.strip() for s in sources]
+                    
+                    if exclude_map:
+                        logger.debug(f"Loaded xref exclusions: {exclude_map}")
+            except Exception as e:
+                logger.warning(f"Failed to load xref config: {e}")
+        
+        return processing_map, exclude_map
+
+    def _process_xref_value(self, sab: Optional[str], source: str, value: str):
+        """
+        Process xref value based on configuration.
+        
+        Args:
+            sab: The SAB/source name from filename (e.g., 'SPARC', 'NPO'), or None if not detected
+            source: The xref source name (e.g., 'UBERON', 'FMA')
+            value: The xref value to process
+            
+        Returns:
+            Processed xref value
+        """
+        if not sab:
+            return value
+        
+        key = (sab, source)
+        if key not in self.xref_config:
+            return value
+        
+        config = self.xref_config[key]
+        proc_type = config.get('type')
+        
+        if proc_type == 'remove_decimal':
+            # Remove .0 suffix if present, warn if decimal part is not exactly .0
+            if isinstance(value, str) and '.' in value:
+                try:
+                    num_val = float(value)
+                    # Check if it's a whole number
+                    if num_val == int(num_val):
+                        return str(int(num_val))
+                    else:
+                        # Non-zero decimal part - warn but keep value
+                        logger.warning(
+                            f"Xref {sab}:{source} has non-zero decimal: {value} "
+                            f"(expected integer, keeping as-is)"
+                        )
+                except (ValueError, TypeError):
+                    pass  # Not numeric, keep original
+        
+        return value
 
     def connect(self):
         """Connect to the database."""
@@ -152,18 +242,23 @@ class DatabaseBuilder:
             logger.error(f"Failed to load {csv_path}: {e}")
             raise
 
-    def _load_nodes(self, reader, csv_path: str, fieldnames: list = None):
+    def _load_nodes(self, reader, csv_path: str, fieldnames: Optional[list] = None):
         """
         Load nodes and xrefs from CSV reader.
         
         Args:
             reader: CSV DictReader
             csv_path: Path to CSV file (for logging)
-            fieldnames: List of actual column names (columns 3+ are xref SABs)
+            fieldnames: List of actual column names (columns 3+ are xref sources), or None to use reader.fieldnames
         """
         count = 0
         xref_count = 0
         verbose = logger.isEnabledFor(logging.DEBUG)
+        
+        # Extract SAB from filename (e.g., "SPARC.Anatomy.nodes.csv" -> "SPARC")
+        filename = Path(csv_path).name
+        sab = filename.split('.')[0] if '.' in filename else None
+        logger.debug(f"Extracted SAB from filename '{filename}': {sab}")
         
         try:
             # Use passed fieldnames or get from reader
@@ -171,8 +266,8 @@ class DatabaseBuilder:
                 fieldnames = reader.fieldnames
             logger.debug(f"CSV columns in {csv_path}: {fieldnames}")
             
-            # Columns 3+ are xref columns with header = SAB
-            xref_sabs = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
+            # Columns 3+ are xref columns with header = source (xref source authority)
+            xref_sources = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
             
             for row_num, row in enumerate(reader, 1):
                 if row_num <= 3:
@@ -207,15 +302,23 @@ class DatabaseBuilder:
                 
                 count += 1
 
-                # Parse xrefs from columns 3+ (column header is SAB, value is id as string)
-                for sab in xref_sabs:
-                    xref_value = row.get(sab, '').strip()
+                # Parse xrefs from columns 3+ (column header is xref source, value is id as string)
+                for source in xref_sources:
+                    # Check if this source should be excluded for this SAB
+                    if sab in self.xref_exclude and source in self.xref_exclude[sab]:
+                        logger.debug(f"Skipping xref source '{source}' for SAB '{sab}' (excluded)")
+                        continue
+                    
+                    xref_value = row.get(source, '').strip()
                     if xref_value:
-                        # Insert xref - source is column header (SAB), id is the value (as string, no conversion)
+                        # Apply xref processing if configured for this SAB + source combination
+                        processed_value = self._process_xref_value(sab, source, xref_value)
+                        
+                        # Insert xref - source is column header (xref source authority), id is the value (as string)
                         self.cursor.execute("""
                             INSERT INTO xref (node_id, source, id)
                             VALUES (?, ?, ?)
-                        """, (node_id, sab, xref_value))
+                        """, (node_id, source, processed_value))
                         xref_count += 1
 
             # Final commit after all rows (only needed if not in verbose mode)
@@ -262,7 +365,7 @@ class DatabaseBuilder:
             logger.error(f"Failed to load {csv_path}: {e}")
             raise
 
-    def _load_edges(self, reader, csv_path: str, expected_sab: str = None):
+    def _load_edges(self, reader, csv_path: str, expected_sab: Optional[str] = None):
         """Load edges from CSV reader with SAB validation."""
         count = 0
         sab_mismatch_count = 0

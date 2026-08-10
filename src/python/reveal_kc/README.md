@@ -28,7 +28,9 @@ Builds SQLite database from CSV files:
 - Loads node data (ID, name/label, type, and xrefs)
 - Loads edge data (source, target, relation, metadata)
 - Handles missing column headers (first column often has no header)
-- Stores xref values as strings (preserves `916.0` as-is, not converted to integer)
+- Extracts SAB (data source) from filename for xref processing
+- Applies configurable xref processing based on SAB + xref source (e.g., remove `.0` decimals)
+- Stores xref values as strings (after optional processing)
 - Supports batch commits or per-row commits (verbose mode)
 
 ### `ddkg_schema.sql`
@@ -37,6 +39,13 @@ SQLite database schema with three tables:
 - **edges**: edge_id (PK auto), source (FK), target (FK), relation, sab, evidence_class, dcc
 - **xref**: xref_id (PK auto), node_id (FK), source, id
 - Indexes on foreign keys and common query fields
+
+### `xref_config.json`
+Configuration file for special processing of xref values:
+- Specifies which xref sources (SABs) need preprocessing
+- Currently supports `remove_decimal` type to strip `.0` from numeric identifiers
+- Warns if decimal part is non-zero (e.g., `916.5` instead of `916.0`)
+- Example: UBERON and FMA identifiers have `.0` suffix in CSV but should be stored as integers
 
 ## Installation
 
@@ -174,11 +183,86 @@ CREATE TABLE xref (
 
 - **Automatic delimiter detection**: Handles both tab and comma-separated CSV files
 - **Missing value handling**: Uses node_id as fallback for empty names (NOT NULL constraint)
-- **String preservation**: All xref values stored as strings (e.g., "916.0" not converted to 916)
+- **SAB-aware xref processing**: Extracts data source (SAB) from filename, applies source-specific processing rules
+- **Configurable xref transformation**: Map (SAB, xref_source) pairs to processing operations via `xref_config.json`
+- **String preservation**: Xref values stored as strings exactly as they appear (or after configured processing)
 - **Batch vs. per-row commits**: Normal mode batches commits; verbose mode (`-v`) commits after each node for better debugging
 - **Foreign key support**: Automatically creates placeholder nodes for edges referencing non-existent nodes
 - **Flexible paths**: Separate download folder from processing folder
 - **Logging**: File logging, debug output, progress reporting
+
+## Xref Configuration
+
+The `xref_config.json` file controls special processing of xref values by data source (SAB) and xref source:
+
+```json
+{
+  "xref_processing": [
+    {
+      "type": "remove_decimal",
+      "description": "UBERON and FMA identifiers are integers, remove .0 suffix",
+      "sources": {
+        "SPARC": [
+          "UBERON",
+          "FMA"
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Processing Rules
+
+Each rule contains:
+- **type**: Processing operation (`remove_decimal`, etc.)
+- **description**: Human-readable explanation
+- **sources**: Map of SAB → list of xref sources to process
+  - SAB is extracted from filename (e.g., `SPARC.Anatomy.nodes.csv` → `SPARC`)
+  - Xref sources are column headers (e.g., `UBERON`, `FMA`)
+
+### Processing Types
+
+- **`remove_decimal`**: Strips `.0` suffix from numeric values (e.g., `916.0` → `916`)
+  - Logs warning if decimal part is non-zero (e.g., `916.5`)
+  - Keeps non-numeric values unchanged
+
+### Adding New Processing Rules
+
+1. Edit `xref_config.json`
+2. Add new object to `xref_processing` array
+3. Specify processing type and description
+4. Map SAB names to lists of xref sources that need processing
+5. Restart the build process
+
+**Example**: Add decimal removal for NPO UBERON column:
+```json
+{
+  "type": "remove_decimal",
+  "description": "NPO UBERON identifiers are integers",
+  "sources": {
+    "NPO": ["UBERON"]
+  }
+}
+```
+
+### Excluding Xref Sources
+
+You can exclude certain xref sources from being loaded into the database using `xref_exclude`:
+
+```json
+{
+  "xref_processing": [...],
+  "xref_exclude": {
+    "SPARC": ["unwanted_source", "another_source"],
+    "NPO": ["excluded_column"]
+  }
+}
+```
+
+- **xref_exclude**: Map of SAB → list of xref source names to skip
+- Excluded sources will not be written to the database
+- Useful for skipping low-quality or redundant columns
 
 ## Examples
 
@@ -219,5 +303,7 @@ python data_distillery_kc.py -i data/validated -o production.sqlite
 - Use `-D` to force re-download and extract
 
 ### Decimal values being stored (916.0 vs 916)
-- This is intentional—xref IDs are stored as strings exactly as they appear in CSVs
-- If you need integer values, post-process with SQL or export script
+- SPARC data UBERON and FMA columns are configured to remove `.0` suffix automatically via `xref_config.json`
+- Other data sources or xref sources store values exactly as they appear in CSVs
+- To add processing for other data sources, edit `xref_config.json` and add a rule mapping (SAB, xref_source) → processing type
+- Non-zero decimals (e.g., `916.5`) generate warnings but are kept as-is

@@ -1,0 +1,20 @@
+{
+  "xref_processing": [
+    {
+      "type": "remove_decimal",
+      "description": "identifiers are integers, remove .0 suffix",
+      "sources": {
+        "NPO": [
+          "UBERON",
+          "FMA",
+          "NCBI"
+        ]
+      }
+    }
+  ],
+  "xref_exclude": {
+    "NPO": [
+        "SNOMEDCT_US"
+    ]
+  }
+}
