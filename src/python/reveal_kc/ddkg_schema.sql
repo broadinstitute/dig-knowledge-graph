@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE TABLE IF NOT EXISTS xref (
     xref_id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
-    sab TEXT,
+    source TEXT,
     id TEXT,
     FOREIGN KEY (node_id) REFERENCES nodes(node_id)
 );
@@ -36,6 +36,6 @@ CREATE TABLE IF NOT EXISTS xref (
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_xref_node_id ON xref(node_id);
-CREATE INDEX IF NOT EXISTS idx_xref_sab ON xref(sab);
+CREATE INDEX IF NOT EXISTS idx_xref_source ON xref(source);
 CREATE INDEX IF NOT EXISTS idx_xref_id ON xref(id);
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);

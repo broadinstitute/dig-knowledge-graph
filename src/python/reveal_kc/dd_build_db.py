@@ -9,7 +9,6 @@ import logging
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +95,7 @@ class DatabaseBuilder:
         node_files = sorted(folder.glob("**/*.nodes.csv"))
         edge_files = sorted(folder.glob("**/*.edges.csv"))
 
-        csv_files = node_files + edge_files
-
-        if not csv_files:
+        if not node_files and not edge_files:
             logger.warning(f"No CSV files found in {folder_path}")
             return
 
@@ -110,7 +107,7 @@ class DatabaseBuilder:
         # Load edge files
         for csv_file in edge_files:
             logger.info(f"Loading edges from {csv_file}")
-            self._load_csv_file(str(csv_file), 'edges')
+            self._load_edges_from_file(str(csv_file))
 
         logger.info("Data loading completed")
 
@@ -148,9 +145,6 @@ class DatabaseBuilder:
                     # Create DictReader from current position (after header line)
                     dict_reader = csv.DictReader(f, fieldnames=fieldnames, delimiter=delimiter)
                     self._load_nodes(dict_reader, csv_path, fieldnames)
-                elif table_name == 'edges':
-                    reader = csv.DictReader(f, delimiter=delimiter)
-                    self._load_edges(reader)
                 else:
                     logger.warning(f"Unknown table: {table_name}")
 
@@ -217,9 +211,9 @@ class DatabaseBuilder:
                 for sab in xref_sabs:
                     xref_value = row.get(sab, '').strip()
                     if xref_value:
-                        # Insert xref - sab is column header, id is the value (as string, no conversion)
+                        # Insert xref - source is column header (SAB), id is the value (as string, no conversion)
                         self.cursor.execute("""
-                            INSERT INTO xref (node_id, sab, id)
+                            INSERT INTO xref (node_id, source, id)
                             VALUES (?, ?, ?)
                         """, (node_id, sab, xref_value))
                         xref_count += 1
@@ -234,14 +228,68 @@ class DatabaseBuilder:
             self.conn.rollback()
             raise
 
-    def _load_edges(self, reader):
-        """Load edges from CSV reader."""
-        count = 0
+    def _load_edges_from_file(self, csv_path: str):
+        """
+        Load edges from a CSV file with validation.
+        
+        Args:
+            csv_path: Path to the edges CSV file
+        """
         try:
-            for row in reader:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                # Detect delimiter
+                first_line = f.readline()
+                f.seek(0)
+                delimiter = '\t' if '\t' in first_line else ','
+                
+                # Extract expected SAB from filename (e.g., "SPARC.edges.csv" -> "SPARC")
+                filename = Path(csv_path).name
+                expected_sab = filename.split('.')[0] if '.' in filename else None
+                logger.debug(f"Expected SAB from filename '{filename}': {expected_sab}")
+                
+                reader = csv.DictReader(f, delimiter=delimiter)
+                
+                # Validate required columns exist
+                required_cols = ['source', 'target']
+                if reader.fieldnames and not all(col in reader.fieldnames for col in required_cols):
+                    raise ValueError(
+                        f"Missing required columns in {csv_path}. "
+                        f"Expected: {required_cols}, Found: {reader.fieldnames}"
+                    )
+                
+                self._load_edges(reader, csv_path, expected_sab)
+        except Exception as e:
+            logger.error(f"Failed to load {csv_path}: {e}")
+            raise
+
+    def _load_edges(self, reader, csv_path: str, expected_sab: str = None):
+        """Load edges from CSV reader with SAB validation."""
+        count = 0
+        sab_mismatch_count = 0
+        skipped_count = 0
+        try:
+            for row_num, row in enumerate(reader, 1):
                 # First ensure source and target nodes exist
-                source = row.get('source')
-                target = row.get('target')
+                source = row.get('source', '').strip()
+                target = row.get('target', '').strip()
+                sab = row.get('SAB', '').strip()
+
+                # Skip rows with empty source or target
+                if not source or not target:
+                    logger.debug(
+                        f"Row {row_num} in {csv_path}: Skipping edge with empty "
+                        f"source={repr(source)} or target={repr(target)}"
+                    )
+                    skipped_count += 1
+                    continue
+
+                # Verify SAB matches filename if expected_sab is provided
+                if expected_sab and sab and sab != expected_sab:
+                    logger.warning(
+                        f"Row {row_num} in {csv_path}: SAB mismatch - "
+                        f"filename expects '{expected_sab}' but row has '{sab}'"
+                    )
+                    sab_mismatch_count += 1
 
                 # Insert placeholder nodes if they don't exist
                 self.cursor.execute("""
@@ -262,14 +310,25 @@ class DatabaseBuilder:
                     source,
                     target,
                     row.get('relation'),
-                    row.get('SAB'),
+                    sab,
                     row.get('evidence_class'),
                     row.get('dcc')
                 ))
                 count += 1
 
             self.conn.commit()
-            logger.info(f"Loaded {count} edges")
+            if skipped_count > 0:
+                logger.warning(
+                    f"Loaded {count} edges from {csv_path} "
+                    f"(skipped {skipped_count} rows with empty source/target)"
+                )
+            elif sab_mismatch_count > 0:
+                logger.warning(
+                    f"Loaded {count} edges from {csv_path} "
+                    f"({sab_mismatch_count} SAB mismatches with filename)"
+                )
+            else:
+                logger.info(f"Loaded {count} edges from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load edges: {e}")
             self.conn.rollback()

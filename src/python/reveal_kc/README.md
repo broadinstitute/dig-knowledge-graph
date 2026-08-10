@@ -35,7 +35,7 @@ Builds SQLite database from CSV files:
 SQLite database schema with three tables:
 - **nodes**: node_id (PK), name (NOT NULL), type
 - **edges**: edge_id (PK auto), source (FK), target (FK), relation, sab, evidence_class, dcc
-- **xref**: xref_id (PK auto), node_id (FK), sab, id
+- **xref**: xref_id (PK auto), node_id (FK), source, id
 - Indexes on foreign keys and common query fields
 
 ## Installation
@@ -164,7 +164,7 @@ CREATE TABLE edges (
 CREATE TABLE xref (
     xref_id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
-    sab TEXT,
+    source TEXT,
     id TEXT,
     FOREIGN KEY (node_id) REFERENCES nodes(node_id)
 );
