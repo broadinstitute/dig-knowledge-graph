@@ -11,7 +11,7 @@ The Data Distillery automates the process of:
 
 ## Components
 
-### `data_distillery_kc.py`
+### `data_distillery_kg.py`
 Main CLI entry point with flexible command-line arguments to control download and database building.
 
 ### `dd_download.py`
@@ -57,7 +57,7 @@ pip install requests
 
 ### Basic: Download and build database (clean)
 ```bash
-python data_distillery_kc.py -O
+python data_distillery_kg.py -O
 ```
 - Downloads all files to `data/download/`
 - Extracts and processes CSVs
@@ -66,35 +66,35 @@ python data_distillery_kc.py -O
 
 ### Download only (no clean)
 ```bash
-python data_distillery_kc.py -d -f data/download
+python data_distillery_kg.py -d -f data/download
 ```
 - Downloads files if not already extracted
 - Keeps existing database
 
 ### Process existing files (no download)
 ```bash
-python data_distillery_kc.py -i data/download
+python data_distillery_kg.py -i data/download
 ```
 - Skips download entirely
 - Processes CSVs from specified folder
 
 ### Force re-download all files
 ```bash
-python data_distillery_kc.py -D -O
+python data_distillery_kg.py -D -O
 ```
 - Forces download of all files (even if already extracted)
 - Cleans database and starts fresh
 
 ### Verbose logging with file output
 ```bash
-python data_distillery_kc.py -O -v -l build.log
+python data_distillery_kg.py -O -v -l build.log
 ```
 - `-v`: Show debug output (commits after each node)
 - `-l build.log`: Write logs to file
 
 ### Custom output paths
 ```bash
-python data_distillery_kc.py -f data/raw -i data/processed -o mydb.sqlite
+python data_distillery_kg.py -f data/raw -i data/processed -o mydb.sqlite
 ```
 - `-f data/raw`: Download to `data/raw/`
 - `-i data/processed`: Process CSVs from `data/processed/`
@@ -269,25 +269,25 @@ You can exclude certain xref sources from being loaded into the database using `
 ### Start from scratch
 ```bash
 # Clean build: download, extract, and create fresh database
-python data_distillery_kc.py -D -O -v -l build.log
+python data_distillery_kg.py -D -O -v -l build.log
 ```
 
 ### Incremental builds
 ```bash
 # Download only new files, add to existing database
-python data_distillery_kc.py -d -i data/download
+python data_distillery_kg.py -d -i data/download
 
 # Reprocess existing files without re-downloading
-python data_distillery_kc.py -i data/download
+python data_distillery_kg.py -i data/download
 ```
 
 ### Multi-folder workflow
 ```bash
 # Download to staging area
-python data_distillery_kc.py -D -f data/staging
+python data_distillery_kg.py -D -f data/staging
 
 # Process from validation area
-python data_distillery_kc.py -i data/validated -o production.sqlite
+python data_distillery_kg.py -i data/validated -o production.sqlite
 ```
 
 ## Troubleshooting
