@@ -1,14 +1,16 @@
 """
-Utility script to generate xref_config.json by analyzing CSV files.
+Utility script for analyzing and managing CFDE data CSV files.
 
-Crawls through data/download folder, reads all node files, and identifies:
-- Columns with decimal values that look like integers (e.g., 916.0)
-- Sources to exclude (e.g., SNOMEDCT_US)
+Commands:
+    config: Generate xref_config.json by analyzing CSV files for decimal columns and sources to exclude
+    list-edges: List all edge file headers with folder name and SAB information
 
 Usage:
-    python util.py
+    python util.py config [-f DATA_FOLDER]
+    python util.py list-edges [-f DATA_FOLDER]
 """
 
+import argparse
 import csv
 import json
 import logging
@@ -144,12 +146,57 @@ def build_config(decimal_columns: dict, exclude_sources: dict):
     return config
 
 
-def main():
-    """Main entry point."""
+def list_edge_headers(data_folder: str = "data/download"):
+    """
+    Crawl through edge files and print headers with folder and SAB information.
+    
+    Args:
+        data_folder: Root folder to search for edge files
+    """
+    data_path = Path(data_folder)
+    
+    if not data_path.exists():
+        logger.error(f"Data folder not found: {data_path}")
+        return
+    
+    # Find all *.edges.csv files recursively
+    edge_files = sorted(data_path.rglob("*.edges.csv"))
+    logger.info(f"Found {len(edge_files)} edge files\n")
+    
+    for csv_path in edge_files:
+        # Extract folder name and SAB
+        folder_name = csv_path.parent.name
+        filename = csv_path.name
+        sab = filename.split('.')[0] if '.' in filename else "UNKNOWN"
+        
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                # Detect delimiter
+                first_line = f.readline()
+                delimiter = '\t' if '\t' in first_line else ','
+                f.seek(0)
+                
+                reader = csv.reader(f, delimiter=delimiter)
+                header = next(reader, None)
+                
+                if header:
+                    # Format output: folder_name | SAB | header columns
+                    header_str = " | ".join(header)
+                    print(f"{folder_name:30s} | {sab:12s} | {header_str}")
+                else:
+                    logger.warning(f"No header found in {csv_path}")
+                    
+        except Exception as e:
+            logger.error(f"Error reading {csv_path}: {e}")
+            continue
+
+
+def cmd_config(data_folder: str = "data/download"):
+    """Command: Generate xref_config.json by analyzing CSV files."""
     logger.info("Analyzing CSV files to generate xref_config.json...")
     
     # Analyze data files
-    decimal_columns, exclude_sources = find_decimal_columns()
+    decimal_columns, exclude_sources = find_decimal_columns(data_folder)
     
     logger.info(f"\nSummary:")
     logger.info(f"  Columns with .0 decimals: {decimal_columns}")
@@ -170,6 +217,61 @@ def main():
         return 1
     
     return 0
+
+
+def cmd_list_edges(data_folder: str = "data/download"):
+    """Command: List all edge file headers with folder and SAB information."""
+    logger.info(f"Scanning for edge files in {data_folder}...\n")
+    list_edge_headers(data_folder)
+    return 0
+
+
+def main():
+    """Main entry point with CLI argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="Utility script for analyzing CFDE data CSV files"
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    
+    # Config command
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Generate xref_config.json by analyzing CSV files"
+    )
+    config_parser.add_argument(
+        "-f",
+        "--folder",
+        type=str,
+        default="data/download",
+        dest="data_folder",
+        help="Data folder to analyze (default: data/download)",
+    )
+    
+    # List-edges command
+    edges_parser = subparsers.add_parser(
+        "list-edges",
+        help="List all edge file headers with folder and SAB information"
+    )
+    edges_parser.add_argument(
+        "-f",
+        "--folder",
+        type=str,
+        default="data/download",
+        dest="data_folder",
+        help="Data folder to search (default: data/download)",
+    )
+    
+    args = parser.parse_args()
+    
+    # Dispatch to appropriate command
+    if args.command == "config":
+        return cmd_config(args.data_folder)
+    elif args.command == "list-edges":
+        return cmd_list_edges(args.data_folder)
+    else:
+        parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
