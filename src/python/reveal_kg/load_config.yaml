@@ -1,0 +1,41 @@
+# Configuration for loading the knowledge graph into SQLite
+
+# Database settings
+database:
+  path: "data/BiomarkerKG/biomarker_kg.sqlite"  # Path to SQLite database file
+  
+# Nodes configuration
+nodes:
+  # Mapping of CSV filename prefixes to semantic types
+  # Keys are used to match against the .nodes.csv files
+  types:
+    BIOMARKER: "biomarker"
+    HGNC: "gene"
+    CHEBI: "chemical"
+    DOID: "disease"
+    CL: "cell"
+    UNIPROTKB: "protein"
+    PR: "protein"
+    RNA: "transcript"
+    PDB: "protein"
+    RNAC: "transcript"
+    MRNA: "transcript"
+    GLYCAN: "glycan"
+    NCIT: "ncit_concept"
+    UBERON: "anatomical_structure"
+    OMIM: "disease"
+    OBCI: "biomarker_role"
+    DBSNP: "genetic_variant"
+
+# Edges configuration
+edges:
+  # Default source abbreviation for all edges (can be overridden per edge file)
+  default_sab: "BIOMARKER"
+  
+  # Pattern for edge CSV files: {predicate}.{target_type}.edges.csv
+  # The loader will discover these automatically
+
+# Bulk loading settings
+loading:
+  batch_size: 5000  # Number of rows to process before committing
+  skip_duplicates: true  # Skip duplicate nodes/edges if they already exist

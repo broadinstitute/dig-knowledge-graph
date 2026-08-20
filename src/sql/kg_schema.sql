@@ -9,7 +9,7 @@ CREATE TABLE nodes (
 );
 
 CREATE TABLE edges (
-    edge_id TEXT PRIMARY KEY,
+    edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_node_id TEXT NOT NULL,
     predicate TEXT NOT NULL,
     target_node_id TEXT NOT NULL,
@@ -38,7 +38,7 @@ CREATE TABLE node_properties (
 
 -- Map edges to properties (many-to-many)
 CREATE TABLE edge_properties (
-    edge_id TEXT NOT NULL,
+    edge_id INTEGER NOT NULL,
     property_id INTEGER NOT NULL,
     PRIMARY KEY (edge_id, property_id),
     FOREIGN KEY (edge_id) REFERENCES edges(edge_id) ON DELETE CASCADE,
@@ -47,7 +47,7 @@ CREATE TABLE edge_properties (
 
 -- External identifiers
 CREATE TABLE identifiers (
-    identifier_id TEXT PRIMARY KEY,
+    identifier_id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
     identifier_type TEXT NOT NULL,
     identifier_value TEXT NOT NULL,
