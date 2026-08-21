@@ -43,7 +43,7 @@ def main():
         "-f",
         "--download-folder",
         type=str,
-        default="data/download",
+        default="data/DataDistilleryKG/download",
         dest="download_folder",
         help="Folder for downloaded and extracted files (default: data/download)",
     )
@@ -51,7 +51,7 @@ def main():
         "-i",
         "--input-folder",
         type=str,
-        default="data/download",
+        default="data/DataDistilleryKG/download",
         dest="input_folder",
         help="Input folder with CSV files for processing (default: data/download)",
     )
@@ -59,7 +59,7 @@ def main():
         "-o",
         "--output",
         type=str,
-        default="data/ddkg.sqlite",
+        default="data/DataDistilleryKG/ddkg.sqlite",
         dest="output",
         help="Output SQLite database file (default: data/ddkg.sqlite)",
     )

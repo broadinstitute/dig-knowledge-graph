@@ -1,7 +1,8 @@
 """
 Build SQLite database from downloaded CFDE data files.
 
-This module creates and populates a SQLite database with nodes, edges, and xref tables.
+This module creates and populates a SQLite database with nodes, edges, identifiers, and properties tables.
+Uses the new normalized schema (kg_schema.sql).
 """
 
 import csv
@@ -41,7 +42,7 @@ class DatabaseBuilder:
             - processing_map: dict mapping (sab, source) -> processing_config
             - exclude_map: dict mapping sab -> list of sources to exclude
         """
-        config_file = Path(__file__).parent / "xref_config.json"
+        config_file = Path(__file__).parent / "dd_config.json"
         processing_map = {}
         exclude_map = {}
         
@@ -120,6 +121,39 @@ class DatabaseBuilder:
         
         return value
 
+    def _add_edge_property(self, edge_id: int, property_key: str, property_value: str):
+        """
+        Add a property to an edge (stores in properties + edge_properties tables).
+        
+        Args:
+            edge_id: ID of the edge
+            property_key: Property name (e.g., 'evidence_class', 'dcc')
+            property_value: Property value
+        """
+        try:
+            # Insert or get the property (deduplicated by key, value, and type)
+            self.cursor.execute("""
+                INSERT OR IGNORE INTO properties (property_key, property_value, value_type)
+                VALUES (?, ?, 'string')
+            """, (property_key, property_value))
+            
+            # Get the property_id
+            self.cursor.execute("""
+                SELECT property_id FROM properties
+                WHERE property_key = ? AND property_value = ? AND value_type = 'string'
+            """, (property_key, property_value))
+            
+            property_id = self.cursor.fetchone()
+            if property_id:
+                property_id = property_id[0]
+                # Link edge to property
+                self.cursor.execute("""
+                    INSERT OR IGNORE INTO edge_properties (edge_id, property_id)
+                    VALUES (?, ?)
+                """, (edge_id, property_id))
+        except sqlite3.Error as e:
+            logger.warning(f"Failed to add edge property {property_key}={property_value}: {e}")
+
     def connect(self):
         """Connect to the database."""
         try:
@@ -148,8 +182,9 @@ class DatabaseBuilder:
         try:
             logger.info("Creating database schema...")
 
-            # Read and execute schema file
-            schema_file = Path(__file__).parent / "ddkg_schema.sql"
+            # Read and execute schema file (new normalized schema)
+            # Path: src/sql/kg_schema.sql
+            schema_file = Path(__file__).parent.parent.parent / "sql" / "kg_schema.sql"
             
             if not schema_file.exists():
                 logger.error(f"Schema file not found: {schema_file}")
@@ -244,16 +279,17 @@ class DatabaseBuilder:
 
     def _load_nodes(self, reader, csv_path: str, fieldnames: Optional[list] = None):
         """
-        Load nodes and xrefs from CSV reader.
+        Load nodes and identifiers from CSV reader.
         
         Args:
             reader: CSV DictReader
             csv_path: Path to CSV file (for logging)
-            fieldnames: List of actual column names (columns 3+ are xref sources), or None to use reader.fieldnames
+            fieldnames: List of actual column names (columns 3+ are identifier types)
         """
         count = 0
-        xref_count = 0
+        identifier_count = 0
         verbose = logger.isEnabledFor(logging.DEBUG)
+        null_type_warned = False  # Track if we've warned about NULL types in this file
         
         # Extract SAB from filename (e.g., "SPARC.Anatomy.nodes.csv" -> "SPARC")
         filename = Path(csv_path).name
@@ -266,8 +302,8 @@ class DatabaseBuilder:
                 fieldnames = reader.fieldnames
             logger.debug(f"CSV columns in {csv_path}: {fieldnames}")
             
-            # Columns 3+ are xref columns with header = source (xref source authority)
-            xref_sources = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
+            # Columns 3+ are identifier type columns (header = identifier type like UBERON, FMA)
+            identifier_types = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
             
             for row_num, row in enumerate(reader, 1):
                 if row_num <= 3:
@@ -277,8 +313,8 @@ class DatabaseBuilder:
                 # Column 1 is node_id, column 2 is name/label, column 3 is type
                 node_id = row.get('node_id', '').strip()
                 # Try both 'name' and 'label' column names
-                name = row.get('name', '') or row.get('label', '')
-                name = name.strip()
+                label = row.get('name', '') or row.get('label', '')
+                label = label.strip()
                 node_type = row.get('type', '').strip()
 
                 # Skip rows with empty node_id (including accidental header rows)
@@ -286,15 +322,22 @@ class DatabaseBuilder:
                     logger.debug(f"Skipping row {row_num}: empty node_id")
                     continue
 
-                # Use node_id as fallback if name is empty (name is NOT NULL in schema)
-                if not name:
-                    name = node_id
+                # Use node_id as fallback if label is empty (label is NOT NULL in schema)
+                if not label:
+                    label = node_id
+                
+                # Handle NULL types: use empty string and warn once per file
+                if not node_type:
+                    if not null_type_warned:
+                        logger.warning(f"Found NULL node types in {filename} - using empty string")
+                        null_type_warned = True
+                    node_type = ''
 
-                # Insert node
+                # Insert node with new schema column order (node_id, type, label)
                 self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, name, type)
+                    INSERT OR IGNORE INTO nodes (node_id, type, label)
                     VALUES (?, ?, ?)
-                """, (node_id, name, node_type if node_type else None))
+                """, (node_id, node_type, label))
                 
                 # Commit after each node only in verbose mode
                 if verbose:
@@ -302,30 +345,34 @@ class DatabaseBuilder:
                 
                 count += 1
 
-                # Parse xrefs from columns 3+ (column header is xref source, value is id as string)
-                for source in xref_sources:
-                    # Check if this source should be excluded for this SAB
-                    if sab in self.xref_exclude and source in self.xref_exclude[sab]:
-                        logger.debug(f"Skipping xref source '{source}' for SAB '{sab}' (excluded)")
+                # Parse identifiers from columns 3+ 
+                # Column header is identifier type (UBERON, FMA, etc.), value is the identifier
+                for identifier_type in identifier_types:
+                    # Check if this type should be excluded for this SAB
+                    if sab in self.xref_exclude and identifier_type in self.xref_exclude[sab]:
+                        logger.debug(f"Skipping identifier type '{identifier_type}' for SAB '{sab}' (excluded)")
                         continue
                     
-                    xref_value = row.get(source, '').strip()
-                    if xref_value:
-                        # Apply xref processing if configured for this SAB + source combination
-                        processed_value = self._process_xref_value(sab, source, xref_value)
+                    identifier_value = row.get(identifier_type, '').strip()
+                    if identifier_value:
+                        # Apply processing if configured for this SAB + identifier_type combination
+                        processed_value = self._process_xref_value(sab, identifier_type, identifier_value)
                         
-                        # Insert xref - source is column header (xref source authority), id is the value (as string)
+                        # Store as CURIE format: {identifier_type}:{identifier_value}
+                        curie_value = f"{identifier_type}:{processed_value}"
+                        
+                        # Insert identifier
                         self.cursor.execute("""
-                            INSERT INTO xref (node_id, source, id)
+                            INSERT INTO identifiers (node_id, identifier_type, identifier_value)
                             VALUES (?, ?, ?)
-                        """, (node_id, source, processed_value))
-                        xref_count += 1
+                        """, (node_id, identifier_type, curie_value))
+                        identifier_count += 1
 
             # Final commit after all rows (only needed if not in verbose mode)
             if not verbose:
                 self.conn.commit()
             
-            logger.info(f"Loaded {count} nodes and {xref_count} xrefs from {csv_path}")
+            logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load nodes: {e}")
             self.conn.rollback()
@@ -366,7 +413,7 @@ class DatabaseBuilder:
             raise
 
     def _load_edges(self, reader, csv_path: str, expected_sab: Optional[str] = None):
-        """Load edges from CSV reader with SAB validation."""
+        """Load edges from CSV reader with SAB validation and property handling."""
         count = 0
         sab_mismatch_count = 0
         skipped_count = 0
@@ -394,30 +441,40 @@ class DatabaseBuilder:
                     )
                     sab_mismatch_count += 1
 
-                # Insert placeholder nodes if they don't exist
+                # Insert placeholder nodes if they don't exist (with new schema columns)
                 self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, name, type)
-                    VALUES (?, ?, NULL)
-                """, (source, source))
+                    INSERT OR IGNORE INTO nodes (node_id, type, label)
+                    VALUES (?, ?, ?)
+                """, (source, '', source))
 
                 self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, name, type)
-                    VALUES (?, ?, NULL)
-                """, (target, target))
+                    INSERT OR IGNORE INTO nodes (node_id, type, label)
+                    VALUES (?, ?, ?)
+                """, (target, '', target))
 
-                # Insert edge
+                # Insert edge with new column names
                 self.cursor.execute("""
-                    INSERT INTO edges (source, target, relation, sab, evidence_class, dcc)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO edges (source_node_id, predicate, target_node_id, sab)
+                    VALUES (?, ?, ?, ?)
                 """, (
                     source,
-                    target,
                     row.get('relation'),
-                    sab,
-                    row.get('evidence_class'),
-                    row.get('dcc')
+                    target,
+                    sab
                 ))
+                
+                edge_id = self.cursor.lastrowid
                 count += 1
+                
+                # Store evidence_class and dcc as edge properties
+                evidence_class = row.get('evidence_class', '').strip()
+                dcc = row.get('dcc', '').strip()
+                
+                if evidence_class:
+                    self._add_edge_property(edge_id, 'evidence_class', evidence_class)
+                
+                if dcc:
+                    self._add_edge_property(edge_id, 'dcc', dcc)
 
             self.conn.commit()
             if skipped_count > 0:
