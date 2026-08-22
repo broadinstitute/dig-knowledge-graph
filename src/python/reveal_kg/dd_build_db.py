@@ -130,6 +130,7 @@ class DatabaseBuilder:
             property_key: Property name (e.g., 'evidence_class', 'dcc')
             property_value: Property value
         """
+        assert self.cursor is not None
         try:
             # Insert or get the property (deduplicated by key, value, and type)
             self.cursor.execute("""
@@ -179,6 +180,7 @@ class DatabaseBuilder:
 
     def create_schema(self):
         """Create database schema from SQL file."""
+        assert self.cursor is not None and self.conn is not None
         try:
             logger.info("Creating database schema...")
 
@@ -238,7 +240,7 @@ class DatabaseBuilder:
 
     def _load_csv_file(self, csv_path: str, table_name: str):
         """
-        Load a CSV file into the database.
+        Load a CSV file into the database with header validation.
 
         Args:
             csv_path: Path to the CSV file
@@ -255,21 +257,23 @@ class DatabaseBuilder:
                 logger.debug(f"Detected delimiter: {repr(delimiter)} in {csv_path}")
                 
                 if table_name == 'nodes':
-                    # For nodes, read the header line to get actual column names
+                    # For nodes, read and validate the header line
                     reader = csv.reader(f, delimiter=delimiter)
                     header_row = next(reader)
-                    # File position is now after the header line - don't seek back!
                     
-                    # First column has no header, so prepend 'node_id'
-                    if header_row and header_row[0] == '':
-                        fieldnames = ['node_id'] + header_row[1:]
-                    else:
-                        # If first column has a name, still use 'node_id' for consistency
-                        fieldnames = ['node_id'] + header_row[1:] if header_row[0] else ['node_id'] + header_row
+                    # Validate header and get configuration
+                    header_config = self._validate_node_file_header(header_row, csv_path)
+                    if not header_config:
+                        logger.error(f"Skipping file {csv_path} due to invalid header")
+                        return
+                    
+                    fieldnames = header_config['fieldnames']
+                    from_filename = header_config['from_filename']
+                    file_type = header_config.get('file_type')
                     
                     # Create DictReader from current position (after header line)
                     dict_reader = csv.DictReader(f, fieldnames=fieldnames, delimiter=delimiter)
-                    self._load_nodes(dict_reader, csv_path, fieldnames)
+                    self._load_nodes(dict_reader, csv_path, fieldnames, from_filename, file_type)
                 else:
                     logger.warning(f"Unknown table: {table_name}")
 
@@ -277,7 +281,8 @@ class DatabaseBuilder:
             logger.error(f"Failed to load {csv_path}: {e}")
             raise
 
-    def _load_nodes(self, reader, csv_path: str, fieldnames: Optional[list] = None):
+    def _load_nodes(self, reader, csv_path: str, fieldnames: Optional[list] = None, 
+                    from_filename: bool = False, file_type: Optional[str] = None):
         """
         Load nodes and identifiers from CSV reader.
         
@@ -285,6 +290,8 @@ class DatabaseBuilder:
             reader: CSV DictReader
             csv_path: Path to CSV file (for logging)
             fieldnames: List of actual column names (columns 3+ are identifier types)
+            from_filename: If True, type column is filled from filename
+            file_type: The node type extracted from filename (when from_filename=True)
         """
         count = 0
         identifier_count = 0
@@ -295,27 +302,35 @@ class DatabaseBuilder:
         filename = Path(csv_path).name
         sab = filename.split('.')[0] if '.' in filename else None
         logger.debug(f"Extracted SAB from filename '{filename}': {sab}")
-        
+
+        assert self.cursor is not None and self.conn is not None
         try:
             # Use passed fieldnames or get from reader
             if fieldnames is None:
                 fieldnames = reader.fieldnames
             logger.debug(f"CSV columns in {csv_path}: {fieldnames}")
             
-            # Columns 3+ are identifier type columns (header = identifier type like UBERON, FMA)
-            identifier_types = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
+            # Columns after node_id and label are identifier type columns
+            # Format 1: [node_id, label, type, id1, id2, ...] -> identifiers are columns 3+
+            # Format 2: [node_id, label, id1, id2, ...] -> identifiers are columns 2+
+            if from_filename:
+                # Format 2: no type column in CSV, start identifiers at column 2
+                identifier_types = fieldnames[2:] if fieldnames and len(fieldnames) > 2 else []
+            else:
+                # Format 1: type column present, start identifiers at column 3
+                identifier_types = fieldnames[3:] if fieldnames and len(fieldnames) > 3 else []
             
             for row_num, row in enumerate(reader, 1):
                 if row_num <= 3:
                     logger.debug(f"Row {row_num}: {dict(row)}")
                     
                 # Get node data from first 3 columns
-                # Column 1 is node_id, column 2 is name/label, column 3 is type
-                node_id = row.get('node_id', '').strip()
-                # Try both 'name' and 'label' column names
-                label = row.get('name', '') or row.get('label', '')
-                label = label.strip()
-                node_type = row.get('type', '').strip()
+                # Column 1 is node_id, column 2 is name/label, column 3 is type (if present)
+                node_id = (row.get('node_id') or '').strip()
+                # Try both 'name' and 'label' column names (handle None values)
+                label = ((row.get('name') or '') or (row.get('label') or '')).strip()
+                # Type may not exist in Format 2 (alternative format), handle None
+                node_type = (row.get('type') or '').strip()
 
                 # Skip rows with empty node_id (including accidental header rows)
                 if not node_id:
@@ -326,8 +341,12 @@ class DatabaseBuilder:
                 if not label:
                     label = node_id
                 
-                # Handle NULL types: use empty string and warn once per file
-                if not node_type:
+                # Handle node type: from file, from filename, or NULL
+                if from_filename:
+                    # Use type extracted from filename
+                    node_type = file_type if file_type else ''
+                elif not node_type:
+                    # NULL type in CSV: use empty string and warn once per file
                     if not null_type_warned:
                         logger.warning(f"Found NULL node types in {filename} - using empty string")
                         null_type_warned = True
@@ -345,7 +364,7 @@ class DatabaseBuilder:
                 
                 count += 1
 
-                # Parse identifiers from columns 3+ 
+                # Parse identifiers from columns 3+ (Format 1) or 2+ (Format 2)
                 # Column header is identifier type (UBERON, FMA, etc.), value is the identifier
                 for identifier_type in identifier_types:
                     # Check if this type should be excluded for this SAB
@@ -353,7 +372,8 @@ class DatabaseBuilder:
                         logger.debug(f"Skipping identifier type '{identifier_type}' for SAB '{sab}' (excluded)")
                         continue
                     
-                    identifier_value = row.get(identifier_type, '').strip()
+                    # Handle None values from missing columns (use empty string as default)
+                    identifier_value = (row.get(identifier_type) or '').strip()
                     if identifier_value:
                         # Apply processing if configured for this SAB + identifier_type combination
                         processed_value = self._process_xref_value(sab, identifier_type, identifier_value)
@@ -373,10 +393,80 @@ class DatabaseBuilder:
                 self.conn.commit()
             
             logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
+            
+            logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load nodes: {e}")
             self.conn.rollback()
             raise
+
+    def _validate_node_file_header(self, header_row: list, csv_path: str) -> Optional[dict]:
+        """
+        Validate node file header and determine format.
+        
+        Supports two formats:
+        1. Standard: empty/id, label, type, identifier_types...
+           - Columns 0: node_id, 1: label, 2: type, 3+: identifier types
+        2. Alternative: id, label, identifier_types... (no type)
+           - Columns 0: node_id, 1: label, 2+: identifier types
+           - Type is extracted from filename: <SAB>.<Type>.nodes.csv
+        
+        Args:
+            header_row: List of header column names
+            csv_path: Path to the file (for filename extraction)
+        
+        Returns:
+            Dict with keys: fieldnames, type_column_index, or None if invalid
+        """
+        if not header_row or len(header_row) < 2:
+            logger.error(f"Invalid header in {csv_path}: too few columns. Expected at least (id/empty, label, ...)")
+            return None
+        
+        # Normalize first column (empty string or 'id' both mean node_id)
+        first_col = header_row[0].strip().lower()
+        is_id_first = first_col == '' or first_col == 'id'
+        second_col = header_row[1].strip().lower() if len(header_row) > 1 else ''
+        third_col = header_row[2].strip().lower() if len(header_row) > 2 else ''
+        
+        # Check if second column is 'label'
+        if second_col != 'label':
+            logger.error(f"Invalid header in {csv_path}: expected 'label' in column 2, got '{header_row[1]}'")
+            return None
+        
+        # Determine format based on third column
+        if third_col == 'type' or (third_col == '' and len(header_row) > 3):
+            # Standard format: id/empty, label, type, identifier_types...
+            if not is_id_first:
+                logger.error(f"Invalid header in {csv_path}: first column should be empty or 'id', got '{header_row[0]}'")
+                return None
+            
+            return {
+                'fieldnames': ['node_id', 'label', 'type'] + header_row[3:],
+                'type_column_index': 2,
+                'from_filename': False
+            }
+        else:
+            # Alternative format: id, label, identifier_types... (no type)
+            # Extract type from filename: <SAB>.<Type>.nodes.csv
+            if not is_id_first:
+                logger.error(f"Invalid header in {csv_path}: first column should be empty or 'id', got '{header_row[0]}'")
+                return None
+            
+            filename = Path(csv_path).name
+            # Parse filename: SAB.Type.nodes.csv
+            parts = filename.replace('.nodes.csv', '').split('.')
+            if len(parts) < 2:
+                logger.error(f"Invalid filename format in {csv_path}: expected '<SAB>.<Type>.nodes.csv'")
+                return None
+            
+            file_type = parts[1]  # Type is second part (after SAB)
+            
+            return {
+                'fieldnames': ['node_id', 'label'] + header_row[2:],  # No 'type' column in CSV for this format
+                'type_column_index': -1,  # Sentinel: type comes from filename
+                'from_filename': True,
+                'file_type': file_type
+            }
 
     def _load_edges_from_file(self, csv_path: str):
         """
@@ -417,6 +507,8 @@ class DatabaseBuilder:
         count = 0
         sab_mismatch_count = 0
         skipped_count = 0
+        sab_mismatch_warned = False
+        assert self.cursor is not None and self.conn is not None
         try:
             for row_num, row in enumerate(reader, 1):
                 # First ensure source and target nodes exist
@@ -434,11 +526,16 @@ class DatabaseBuilder:
                     continue
 
                 # Verify SAB matches filename if expected_sab is provided
+                # Use filename SAB if there's a mismatch, and warn only once per file
                 if expected_sab and sab and sab != expected_sab:
-                    logger.warning(
-                        f"Row {row_num} in {csv_path}: SAB mismatch - "
-                        f"filename expects '{expected_sab}' but row has '{sab}'"
-                    )
+                    if not sab_mismatch_warned:
+                        logger.warning(
+                            f"Row {row_num} in {csv_path}: SAB mismatch - "
+                            f"filename expects '{expected_sab}' but row has '{sab}'. "
+                            f"Using filename value '{expected_sab}' for all mismatches in this file."
+                        )
+                        sab_mismatch_warned = True
+                    sab = expected_sab
                     sab_mismatch_count += 1
 
                 # Insert placeholder nodes if they don't exist (with new schema columns)

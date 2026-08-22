@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class DataDownloader:
     """Handle downloading and extracting zip files from a TSV source list."""
 
-    def __init__(self, tsv_file: str = "data/DataDistillerySources.tsv"):
+    def __init__(self, tsv_file: str = "data/DataDistilleryKG/DataDistillerySources.tsv"):
         """
         Initialize the downloader.
 
