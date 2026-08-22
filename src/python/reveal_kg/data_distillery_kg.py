@@ -84,6 +84,13 @@ def main():
         help="Enable verbose logging",
     )
     parser.add_argument(
+        "-X",
+        "--index",
+        action="store_true",
+        dest="build_index",
+        help="Create query performance indexes after loading (recommended for multi-folder builds)",
+    )
+    parser.add_argument(
         "-I",
         "--all-folders",
         action="store_true",
@@ -145,6 +152,10 @@ def main():
     # Build the database
     builder = DatabaseBuilder(db_path=args.output, force_clean_db=args.force_clean_db)
     
+    # Determine if indexes should be created
+    # True if: -X flag explicitly passed OR processing all folders with -I
+    build_indexes = args.build_index or args.process_all
+    
     if args.process_all:
         # Process all folders found in download_folder
         logger.info(f"Processing all folders in {args.download_folder}")
@@ -165,11 +176,17 @@ def main():
         
         logger.info(f"Found {len(csv_folders)} folder(s) with CSV files")
         
-        # Process all folders into the same database
+        # Process all folders into the same database (without indexes until the end)
         try:
             for folder in sorted(csv_folders):
                 logger.info(f"Processing {folder.name}...")
-                builder.build(data_folder=str(folder))
+                builder.build(data_folder=str(folder), build_indexes=False)
+            
+            # Create indexes after all folders are loaded
+            if build_indexes:
+                builder.connect()
+                builder._create_indexes()
+                builder.disconnect()
         except KeyboardInterrupt:
             logger.info("Build interrupted by user")
             sys.exit(1)
@@ -180,7 +197,7 @@ def main():
         # Process single folder specified by -i
         logger.info(f"Processing {args.input_folder}")
         try:
-            builder.build(data_folder=args.input_folder)
+            builder.build(data_folder=args.input_folder, build_indexes=build_indexes)
         except KeyboardInterrupt:
             logger.info("Build interrupted by user")
             sys.exit(1)

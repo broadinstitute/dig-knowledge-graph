@@ -51,6 +51,7 @@ CREATE TABLE identifiers (
     node_id TEXT NOT NULL,
     identifier_type TEXT NOT NULL,
     identifier_value TEXT NOT NULL,
+    UNIQUE(node_id, identifier_type, identifier_value),
     FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
 );
 
@@ -59,17 +60,5 @@ CREATE TABLE identifiers (
 -- INDEX STRATEGY
 -- ============================================================================
 
--- Loading Indexes (required during bulk insert)
+-- Loading Index (required during bulk insert for deduplication)
 CREATE INDEX idx_properties_key_value ON properties(property_key, property_value);
-
--- Query Indexes (create after population)
-CREATE INDEX idx_edges_source ON edges(source_node_id);
-CREATE INDEX idx_edges_target ON edges(target_node_id);
-
-CREATE INDEX idx_node_properties_property ON node_properties(property_id);
-CREATE INDEX idx_edge_properties_property ON edge_properties(property_id);
-
-CREATE INDEX idx_identifiers_type_value ON identifiers(identifier_type, identifier_value);
-
-CREATE INDEX idx_nodes_type ON nodes(type);
-CREATE INDEX idx_edges_predicate ON edges(predicate);

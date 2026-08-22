@@ -2,7 +2,7 @@
 Build SQLite database from downloaded CFDE data files.
 
 This module creates and populates a SQLite database with nodes, edges, identifiers, and properties tables.
-Uses the new normalized schema (kg_schema.sql).
+Uses the normalized schema (kg_schema.sql).
 """
 
 import csv
@@ -184,7 +184,7 @@ class DatabaseBuilder:
         try:
             logger.info("Creating database schema...")
 
-            # Read and execute schema file (new normalized schema)
+            # Read and execute schema file from src/sql/kg_schema.sql
             # Path: src/sql/kg_schema.sql
             schema_file = Path(__file__).parent.parent.parent / "sql" / "kg_schema.sql"
             
@@ -324,8 +324,9 @@ class DatabaseBuilder:
                 if row_num <= 3:
                     logger.debug(f"Row {row_num}: {dict(row)}")
                     
-                # Get node data from first 3 columns
-                # Column 1 is node_id, column 2 is name/label, column 3 is type (if present)
+                # Get node data from first 2-3 columns (type may not exist in Format 2)
+                # Format 1: [node_id, label, type, ...]
+                # Format 2: [node_id, label, ...] (type from filename)
                 node_id = (row.get('node_id') or '').strip()
                 # Try both 'name' and 'label' column names (handle None values)
                 label = ((row.get('name') or '') or (row.get('label') or '')).strip()
@@ -381,9 +382,9 @@ class DatabaseBuilder:
                         # Store as CURIE format: {identifier_type}:{identifier_value}
                         curie_value = f"{identifier_type}:{processed_value}"
                         
-                        # Insert identifier
+                        # Insert identifier (OR IGNORE if duplicate due to overlapping data across folders)
                         self.cursor.execute("""
-                            INSERT INTO identifiers (node_id, identifier_type, identifier_value)
+                            INSERT OR IGNORE INTO identifiers (node_id, identifier_type, identifier_value)
                             VALUES (?, ?, ?)
                         """, (node_id, identifier_type, curie_value))
                         identifier_count += 1
@@ -391,8 +392,6 @@ class DatabaseBuilder:
             # Final commit after all rows (only needed if not in verbose mode)
             if not verbose:
                 self.conn.commit()
-            
-            logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
             
             logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
         except Exception as e:
@@ -591,17 +590,51 @@ class DatabaseBuilder:
             self.conn.rollback()
             raise
 
-    def build(self, data_folder: str):
+    def _create_indexes(self):
+        """
+        Create query performance indexes from kg_indexes.sql file.
+        Call this after data loading is complete for optimal query performance.
+        """
+        assert self.cursor is not None and self.conn is not None
+        try:
+            index_file = Path(__file__).parent.parent.parent / "sql" / "kg_indexes.sql"
+            if not index_file.exists():
+                logger.warning(f"Index file not found: {index_file}")
+                return
+            
+            with open(index_file, 'r') as f:
+                index_sql = f.read()
+            
+            logger.info("Creating query performance indexes...")
+            # Execute all statements in the index file
+            for statement in index_sql.split(';'):
+                statement = statement.strip()
+                if statement and not statement.startswith('--'):
+                    self.cursor.execute(statement)
+            
+            self.conn.commit()
+            logger.info("Query performance indexes created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create indexes: {e}")
+            raise
+
+    def build(self, data_folder: str, build_indexes: bool = False):
         """
         Build the database from CSV files.
 
         Args:
             data_folder: Path to folder containing extracted CSV files
+            build_indexes: If True, create query performance indexes after loading (recommended for multi-folder builds)
         """
         try:
             self.connect()
             self.create_schema()
             self.load_data_from_folder(data_folder)
+            
+            # Create indexes if requested (after all data loading is complete)
+            if build_indexes:
+                self._create_indexes()
+            
             logger.info(f"Database built successfully: {self.db_path}")
         except Exception as e:
             logger.error(f"Failed to build database: {e}")
