@@ -10,7 +10,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from dd_download import DataDownloader
-from dd_build_db import DatabaseBuilder
+from dd_build_db import DatabaseManager, DataBuilder
 
 # Configure logging
 logging.basicConfig(
@@ -150,7 +150,8 @@ def main():
         sys.exit(0)
 
     # Build the database
-    builder = DatabaseBuilder(db_path=args.output, force_clean_db=args.force_clean_db)
+    db = DatabaseManager(db_path=args.output, force_clean_db=args.force_clean_db)
+    builder = DataBuilder(db)
     
     # Determine if indexes should be created
     # True if: -X flag explicitly passed OR processing all folders with -I
@@ -176,34 +177,52 @@ def main():
         
         logger.info(f"Found {len(csv_folders)} folder(s) with CSV files")
         
-        # Process all folders into the same database (without indexes until the end)
+        # Process all folders into the same database
         try:
+            # Initialize database once (schema created, old db cleaned if -O)
+            db.initialize()
+            
+            # Load data from all folders
             for folder in sorted(csv_folders):
                 logger.info(f"Processing {folder.name}...")
-                builder.build(data_folder=str(folder), build_indexes=False)
+                builder.load_folder(str(folder))
             
-            # Create indexes after all folders are loaded
+            # Create indexes after all data is loaded
             if build_indexes:
-                builder.connect()
-                builder._create_indexes()
-                builder.disconnect()
+                db.create_indexes()
+                
+            logger.info("All folders processed successfully")
         except KeyboardInterrupt:
             logger.info("Build interrupted by user")
             sys.exit(1)
         except Exception as e:
             logger.error(f"Build error: {e}")
             sys.exit(1)
+        finally:
+            db.disconnect()
     else:
         # Process single folder specified by -i
         logger.info(f"Processing {args.input_folder}")
         try:
-            builder.build(data_folder=args.input_folder, build_indexes=build_indexes)
+            # Initialize database (schema created, old db cleaned if -O)
+            db.initialize()
+            
+            # Load data from single folder
+            builder.load_folder(args.input_folder)
+            
+            # Create indexes if requested
+            if build_indexes:
+                db.create_indexes()
+                
+            logger.info("Folder processed successfully")
         except KeyboardInterrupt:
             logger.info("Build interrupted by user")
             sys.exit(1)
         except Exception as e:
             logger.error(f"Build error: {e}")
             sys.exit(1)
+        finally:
+            db.disconnect()
 
 
 if __name__ == "__main__":

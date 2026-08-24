@@ -1,8 +1,9 @@
 """
 Build SQLite database from downloaded CFDE data files.
 
-This module creates and populates a SQLite database with nodes, edges, identifiers, and properties tables.
-Uses the normalized schema (kg_schema.sql).
+This module provides two classes:
+- DatabaseManager: Low-level database operations (connection, schema, indexes)
+- DataBuilder: High-level data loading from CSV files
 """
 
 import csv
@@ -16,22 +17,125 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-class DatabaseBuilder:
-    """Build SQLite database from CFDE data files."""
+class DatabaseManager:
+    """Manage SQLite database lifecycle and operations."""
 
     def __init__(self, db_path: str = "data/ddkg.sqlite", force_clean_db: bool = False):
         """
-        Initialize the database builder.
+        Initialize the database manager.
 
         Args:
             db_path: Path to the SQLite database file
-            force_clean_db: If True, delete existing database before building
+            force_clean_db: If True, delete existing database before initializing
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.force_clean_db = force_clean_db
         self.conn = None
         self.cursor = None
+
+    def initialize(self):
+        """Initialize the database: cleanup old one (if -O flag), connect, and create schema."""
+        if self.force_clean_db and self.db_path.exists():
+            self.db_path.unlink()
+            logger.info(f"Removed old database: {self.db_path}")
+        
+        self.connect()
+        self.create_schema()
+
+    def connect(self):
+        """Connect to the database."""
+        try:
+            self.conn = sqlite3.connect(str(self.db_path))
+            self.cursor = self.conn.cursor()
+            # Enable foreign keys
+            self.cursor.execute("PRAGMA foreign_keys = ON")
+            logger.info(f"Connected to database: {self.db_path}")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
+
+    def disconnect(self):
+        """Disconnect from the database."""
+        if self.conn:
+            self.conn.close()
+            logger.info("Disconnected from database")
+
+    def create_schema(self):
+        """Create database schema from SQL file."""
+        assert self.cursor is not None and self.conn is not None
+        try:
+            logger.info("Creating database schema...")
+
+            # Read and execute schema file from src/sql/kg_schema.sql
+            schema_file = Path(__file__).parent.parent.parent / "sql" / "kg_schema.sql"
+            
+            if not schema_file.exists():
+                logger.error(f"Schema file not found: {schema_file}")
+                raise FileNotFoundError(f"Schema file not found: {schema_file}")
+
+            with open(schema_file, 'r') as f:
+                schema_sql = f.read()
+
+            # Execute all statements in the schema file
+            self.cursor.executescript(schema_sql)
+            self.conn.commit()
+            logger.info("Database schema created successfully")
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to create schema: {e}")
+            raise
+
+    def create_indexes(self):
+        """
+        Create query performance indexes from kg_indexes.sql file.
+        Call this after all data loading is complete.
+        """
+        assert self.cursor is not None and self.conn is not None
+        try:
+            index_file = Path(__file__).parent.parent.parent / "sql" / "kg_indexes.sql"
+            if not index_file.exists():
+                logger.warning(f"Index file not found: {index_file}")
+                return
+            
+            with open(index_file, 'r') as f:
+                index_sql = f.read()
+            
+            logger.info("Creating query performance indexes...")
+            # Execute all statements in the index file
+            for statement in index_sql.split(';'):
+                statement = statement.strip()
+                if statement and not statement.startswith('--'):
+                    self.cursor.execute(statement)
+            
+            self.conn.commit()
+            logger.info("Query performance indexes created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create indexes: {e}")
+            raise
+
+    def commit(self):
+        """Commit current transaction."""
+        if self.conn:
+            self.conn.commit()
+
+    def rollback(self):
+        """Rollback current transaction."""
+        if self.conn:
+            self.conn.rollback()
+
+
+class DataBuilder:
+    """Build knowledge graph data from CSV files into database."""
+
+    def __init__(self, database_manager: DatabaseManager):
+        """
+        Initialize the data builder.
+
+        Args:
+            database_manager: DatabaseManager instance to use for operations
+        """
+        self.db = database_manager
         self.xref_config, self.xref_exclude = self._load_xref_config()
 
     def _load_xref_config(self):
@@ -103,110 +207,55 @@ class DatabaseBuilder:
         proc_type = config.get('type')
         
         if proc_type == 'remove_decimal':
-            # Remove .0 suffix if present, warn if decimal part is not exactly .0
-            if isinstance(value, str) and '.' in value:
-                try:
-                    num_val = float(value)
-                    # Check if it's a whole number
-                    if num_val == int(num_val):
-                        return str(int(num_val))
-                    else:
-                        # Non-zero decimal part - warn but keep value
-                        logger.warning(
-                            f"Xref {sab}:{source} has non-zero decimal: {value} "
-                            f"(expected integer, keeping as-is)"
-                        )
-                except (ValueError, TypeError):
-                    pass  # Not numeric, keep original
+            # Remove .0 suffix from decimal numbers (e.g., "916.0" -> "916")
+            try:
+                if '.' in str(value):
+                    float_val = float(value)
+                    int_val = int(float_val)
+                    
+                    # Warn if there's a non-zero decimal part
+                    if float_val != int_val:
+                        logger.warning(f"Decimal value for {sab}/{source}: {value} (non-zero decimal)")
+                    
+                    return str(int_val)
+            except (ValueError, TypeError):
+                # Not a numeric value, return as-is
+                pass
         
         return value
 
     def _add_edge_property(self, edge_id: int, property_key: str, property_value: str):
-        """
-        Add a property to an edge (stores in properties + edge_properties tables).
-        
-        Args:
-            edge_id: ID of the edge
-            property_key: Property name (e.g., 'evidence_class', 'dcc')
-            property_value: Property value
-        """
-        assert self.cursor is not None
+        """Add a property to an edge."""
+        assert self.db.cursor is not None and self.db.conn is not None
         try:
-            # Insert or get the property (deduplicated by key, value, and type)
-            self.cursor.execute("""
+            # Insert or get property
+            self.db.cursor.execute("""
                 INSERT OR IGNORE INTO properties (property_key, property_value, value_type)
                 VALUES (?, ?, 'string')
             """, (property_key, property_value))
             
             # Get the property_id
-            self.cursor.execute("""
+            self.db.cursor.execute("""
                 SELECT property_id FROM properties
                 WHERE property_key = ? AND property_value = ? AND value_type = 'string'
             """, (property_key, property_value))
             
-            property_id = self.cursor.fetchone()
+            property_id = self.db.cursor.fetchone()
             if property_id:
                 property_id = property_id[0]
                 # Link edge to property
-                self.cursor.execute("""
+                self.db.cursor.execute("""
                     INSERT OR IGNORE INTO edge_properties (edge_id, property_id)
                     VALUES (?, ?)
                 """, (edge_id, property_id))
         except sqlite3.Error as e:
             logger.warning(f"Failed to add edge property {property_key}={property_value}: {e}")
 
-    def connect(self):
-        """Connect to the database."""
-        try:
-            # Remove old database file if force_clean_db is True
-            if self.force_clean_db and self.db_path.exists():
-                self.db_path.unlink()
-                logger.info(f"Removed old database: {self.db_path}")
-            
-            self.conn = sqlite3.connect(str(self.db_path))
-            self.cursor = self.conn.cursor()
-            # Enable foreign keys
-            self.cursor.execute("PRAGMA foreign_keys = ON")
-            logger.info(f"Connected to database: {self.db_path}")
-        except sqlite3.Error as e:
-            logger.error(f"Failed to connect to database: {e}")
-            raise
-
-    def disconnect(self):
-        """Disconnect from the database."""
-        if self.conn:
-            self.conn.close()
-            logger.info("Disconnected from database")
-
-    def create_schema(self):
-        """Create database schema from SQL file."""
-        assert self.cursor is not None and self.conn is not None
-        try:
-            logger.info("Creating database schema...")
-
-            # Read and execute schema file from src/sql/kg_schema.sql
-            # Path: src/sql/kg_schema.sql
-            schema_file = Path(__file__).parent.parent.parent / "sql" / "kg_schema.sql"
-            
-            if not schema_file.exists():
-                logger.error(f"Schema file not found: {schema_file}")
-                raise FileNotFoundError(f"Schema file not found: {schema_file}")
-
-            with open(schema_file, 'r') as f:
-                schema_sql = f.read()
-
-            # Execute all statements in the schema file
-            self.cursor.executescript(schema_sql)
-            self.conn.commit()
-            logger.info("Database schema created successfully")
-
-        except sqlite3.Error as e:
-            logger.error(f"Failed to create schema: {e}")
-            raise
-
-    def load_data_from_folder(self, folder_path: str):
+    def load_folder(self, folder_path: str):
         """
-        Load data from CSV files in a folder.
+        Load all CSV data from a folder into the database.
+        
+        Assumes database is already initialized and connected.
 
         Args:
             folder_path: Path to folder containing CSV files
@@ -229,7 +278,7 @@ class DatabaseBuilder:
         # Load node files (which include xrefs in columns 4+)
         for csv_file in node_files:
             logger.info(f"Loading nodes and xrefs from {csv_file}")
-            self._load_csv_file(str(csv_file), 'nodes')
+            self._load_nodes_from_file(str(csv_file))
 
         # Load edge files
         for csv_file in edge_files:
@@ -238,13 +287,12 @@ class DatabaseBuilder:
 
         logger.info("Data loading completed")
 
-    def _load_csv_file(self, csv_path: str, table_name: str):
+    def _load_nodes_from_file(self, csv_path: str):
         """
-        Load a CSV file into the database with header validation.
+        Load nodes from a CSV file with header validation.
 
         Args:
             csv_path: Path to the CSV file
-            table_name: Name of the table ('nodes' or 'edges')
         """
         try:
             with open(csv_path, 'r', encoding='utf-8') as f:
@@ -256,26 +304,23 @@ class DatabaseBuilder:
                 delimiter = '\t' if '\t' in first_line else ','
                 logger.debug(f"Detected delimiter: {repr(delimiter)} in {csv_path}")
                 
-                if table_name == 'nodes':
-                    # For nodes, read and validate the header line
-                    reader = csv.reader(f, delimiter=delimiter)
-                    header_row = next(reader)
-                    
-                    # Validate header and get configuration
-                    header_config = self._validate_node_file_header(header_row, csv_path)
-                    if not header_config:
-                        logger.error(f"Skipping file {csv_path} due to invalid header")
-                        return
-                    
-                    fieldnames = header_config['fieldnames']
-                    from_filename = header_config['from_filename']
-                    file_type = header_config.get('file_type')
-                    
-                    # Create DictReader from current position (after header line)
-                    dict_reader = csv.DictReader(f, fieldnames=fieldnames, delimiter=delimiter)
-                    self._load_nodes(dict_reader, csv_path, fieldnames, from_filename, file_type)
-                else:
-                    logger.warning(f"Unknown table: {table_name}")
+                # Read and validate the header line
+                reader = csv.reader(f, delimiter=delimiter)
+                header_row = next(reader)
+                
+                # Validate header and get configuration
+                header_config = self._validate_node_file_header(header_row, csv_path)
+                if not header_config:
+                    logger.error(f"Skipping file {csv_path} due to invalid header")
+                    return
+                
+                fieldnames = header_config['fieldnames']
+                from_filename = header_config['from_filename']
+                file_type = header_config.get('file_type')
+                
+                # Create DictReader from current position (after header line)
+                dict_reader = csv.DictReader(f, fieldnames=fieldnames, delimiter=delimiter)
+                self._load_nodes(dict_reader, csv_path, fieldnames, from_filename, file_type)
 
         except Exception as e:
             logger.error(f"Failed to load {csv_path}: {e}")
@@ -306,7 +351,7 @@ class DatabaseBuilder:
         sab = filename.split('.')[0] if '.' in filename else None
         logger.debug(f"Extracted SAB from filename '{filename}': {sab}")
 
-        assert self.cursor is not None and self.conn is not None
+        assert self.db.cursor is not None and self.db.conn is not None
         try:
             # Use passed fieldnames or get from reader
             if fieldnames is None:
@@ -383,20 +428,20 @@ class DatabaseBuilder:
                     continue
                 
                 # Insert node with new schema column order (node_id, type, label)
-                self.cursor.execute("""
+                self.db.cursor.execute("""
                     INSERT OR IGNORE INTO nodes (node_id, type, label)
                     VALUES (?, ?, ?)
                 """, (node_id, node_type, label))
                 
                 # Commit after each node only in verbose mode
                 if verbose:
-                    self.conn.commit()
+                    self.db.conn.commit()
                 
                 count += 1
                 
                 # Insert collected identifiers
                 for identifier_type, curie_value in node_identifiers:
-                    self.cursor.execute("""
+                    self.db.cursor.execute("""
                         INSERT OR IGNORE INTO identifiers (node_id, identifier_type, identifier_value)
                         VALUES (?, ?, ?)
                     """, (node_id, identifier_type, curie_value))
@@ -404,7 +449,7 @@ class DatabaseBuilder:
 
             # Final commit after all rows (only needed if not in verbose mode)
             if not verbose:
-                self.conn.commit()
+                self.db.conn.commit()
             
             if nodes_skipped > 0:
                 logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path} "
@@ -413,7 +458,7 @@ class DatabaseBuilder:
                 logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load nodes: {e}")
-            self.conn.rollback()
+            self.db.conn.rollback()
             raise
 
     def _validate_node_file_header(self, header_row: list, csv_path: str) -> Optional[dict]:
@@ -528,7 +573,7 @@ class DatabaseBuilder:
         skipped_count = 0
         missing_nodes_count = 0
         sab_mismatch_warned = False
-        assert self.cursor is not None and self.conn is not None
+        assert self.db.cursor is not None and self.db.conn is not None
         try:
             for row_num, row in enumerate(reader, 1):
                 # First ensure source and target nodes exist
@@ -559,11 +604,11 @@ class DatabaseBuilder:
                     sab_mismatch_count += 1
 
                 # Check if both source and target nodes exist in the database
-                self.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (source,))
-                source_exists = self.cursor.fetchone() is not None
+                self.db.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (source,))
+                source_exists = self.db.cursor.fetchone() is not None
                 
-                self.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (target,))
-                target_exists = self.cursor.fetchone() is not None
+                self.db.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (target,))
+                target_exists = self.db.cursor.fetchone() is not None
                 
                 # Skip edge if either node doesn't exist
                 if not source_exists or not target_exists:
@@ -576,7 +621,7 @@ class DatabaseBuilder:
                     continue
 
                 # Insert edge with new column names
-                self.cursor.execute("""
+                self.db.cursor.execute("""
                     INSERT INTO edges (source_node_id, predicate, target_node_id, sab)
                     VALUES (?, ?, ?, ?)
                 """, (
@@ -586,7 +631,7 @@ class DatabaseBuilder:
                     sab
                 ))
                 
-                edge_id = self.cursor.lastrowid
+                edge_id = self.db.cursor.lastrowid
                 if edge_id is None:
                     logger.warning(f"Failed to insert edge for row {row_num} in {csv_path}")
                     continue
@@ -602,7 +647,7 @@ class DatabaseBuilder:
                 if dcc:
                     self._add_edge_property(edge_id, 'dcc', dcc)
 
-            self.conn.commit()
+            self.db.conn.commit()
             
             # Report skip reasons
             skip_reasons = []
@@ -619,7 +664,7 @@ class DatabaseBuilder:
                 logger.info(f"Loaded {count} edges from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load edges: {e}")
-            self.conn.rollback()
+            self.db.conn.rollback()
             raise
 
     def _create_indexes(self):
@@ -627,7 +672,7 @@ class DatabaseBuilder:
         Create query performance indexes from kg_indexes.sql file.
         Call this after data loading is complete for optimal query performance.
         """
-        assert self.cursor is not None and self.conn is not None
+        assert self.db.cursor is not None and self.db.conn is not None
         try:
             index_file = Path(__file__).parent.parent.parent / "sql" / "kg_indexes.sql"
             if not index_file.exists():
@@ -642,34 +687,14 @@ class DatabaseBuilder:
             for statement in index_sql.split(';'):
                 statement = statement.strip()
                 if statement and not statement.startswith('--'):
-                    self.cursor.execute(statement)
+                    self.db.cursor.execute(statement)
             
-            self.conn.commit()
+            self.db.conn.commit()
             logger.info("Query performance indexes created successfully")
         except Exception as e:
             logger.error(f"Failed to create indexes: {e}")
             raise
 
-    def build(self, data_folder: str, build_indexes: bool = False):
-        """
-        Build the database from CSV files.
 
-        Args:
-            data_folder: Path to folder containing extracted CSV files
-            build_indexes: If True, create query performance indexes after loading (recommended for multi-folder builds)
-        """
-        try:
-            self.connect()
-            self.create_schema()
-            self.load_data_from_folder(data_folder)
-            
-            # Create indexes if requested (after all data loading is complete)
-            if build_indexes:
-                self._create_indexes()
-            
-            logger.info(f"Database built successfully: {self.db_path}")
-        except Exception as e:
-            logger.error(f"Failed to build database: {e}")
-            sys.exit(1)
-        finally:
-            self.disconnect()
+# For backwards compatibility, export both classes
+__all__ = ['DatabaseManager', 'DataBuilder']
