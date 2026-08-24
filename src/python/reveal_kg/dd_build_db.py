@@ -286,6 +286,8 @@ class DatabaseBuilder:
         """
         Load nodes and identifiers from CSV reader.
         
+        Only nodes with at least one identifier are stored in the database.
+        
         Args:
             reader: CSV DictReader
             csv_path: Path to CSV file (for logging)
@@ -295,6 +297,7 @@ class DatabaseBuilder:
         """
         count = 0
         identifier_count = 0
+        nodes_skipped = 0  # Track nodes with no identifiers
         verbose = logger.isEnabledFor(logging.DEBUG)
         null_type_warned = False  # Track if we've warned about NULL types in this file
         
@@ -353,20 +356,10 @@ class DatabaseBuilder:
                         null_type_warned = True
                     node_type = ''
 
-                # Insert node with new schema column order (node_id, type, label)
-                self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, type, label)
-                    VALUES (?, ?, ?)
-                """, (node_id, node_type, label))
-                
-                # Commit after each node only in verbose mode
-                if verbose:
-                    self.conn.commit()
-                
-                count += 1
-
+                # Collect identifiers first to determine if node should be stored
                 # Parse identifiers from columns 3+ (Format 1) or 2+ (Format 2)
                 # Column header is identifier type (UBERON, FMA, etc.), value is the identifier
+                node_identifiers = []
                 for identifier_type in identifier_types:
                     # Check if this type should be excluded for this SAB
                     if sab in self.xref_exclude and identifier_type in self.xref_exclude[sab]:
@@ -381,19 +374,43 @@ class DatabaseBuilder:
                         
                         # Store as CURIE format: {identifier_type}:{identifier_value}
                         curie_value = f"{identifier_type}:{processed_value}"
-                        
-                        # Insert identifier (OR IGNORE if duplicate due to overlapping data across folders)
-                        self.cursor.execute("""
-                            INSERT OR IGNORE INTO identifiers (node_id, identifier_type, identifier_value)
-                            VALUES (?, ?, ?)
-                        """, (node_id, identifier_type, curie_value))
-                        identifier_count += 1
+                        node_identifiers.append((identifier_type, curie_value))
+                
+                # Only insert node if it has at least one identifier
+                if not node_identifiers:
+                    logger.debug(f"Row {row_num}: Skipping node {node_id} - no identifiers found")
+                    nodes_skipped += 1
+                    continue
+                
+                # Insert node with new schema column order (node_id, type, label)
+                self.cursor.execute("""
+                    INSERT OR IGNORE INTO nodes (node_id, type, label)
+                    VALUES (?, ?, ?)
+                """, (node_id, node_type, label))
+                
+                # Commit after each node only in verbose mode
+                if verbose:
+                    self.conn.commit()
+                
+                count += 1
+                
+                # Insert collected identifiers
+                for identifier_type, curie_value in node_identifiers:
+                    self.cursor.execute("""
+                        INSERT OR IGNORE INTO identifiers (node_id, identifier_type, identifier_value)
+                        VALUES (?, ?, ?)
+                    """, (node_id, identifier_type, curie_value))
+                    identifier_count += 1
 
             # Final commit after all rows (only needed if not in verbose mode)
             if not verbose:
                 self.conn.commit()
             
-            logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
+            if nodes_skipped > 0:
+                logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path} "
+                           f"(skipped {nodes_skipped} nodes with no identifiers)")
+            else:
+                logger.info(f"Loaded {count} nodes and {identifier_count} identifiers from {csv_path}")
         except Exception as e:
             logger.error(f"Failed to load nodes: {e}")
             self.conn.rollback()
@@ -502,10 +519,14 @@ class DatabaseBuilder:
             raise
 
     def _load_edges(self, reader, csv_path: str, expected_sab: Optional[str] = None):
-        """Load edges from CSV reader with SAB validation and property handling."""
+        """Load edges from CSV reader with SAB validation and property handling.
+        
+        Only creates edges if both source and target nodes exist in the database.
+        """
         count = 0
         sab_mismatch_count = 0
         skipped_count = 0
+        missing_nodes_count = 0
         sab_mismatch_warned = False
         assert self.cursor is not None and self.conn is not None
         try:
@@ -537,16 +558,22 @@ class DatabaseBuilder:
                     sab = expected_sab
                     sab_mismatch_count += 1
 
-                # Insert placeholder nodes if they don't exist (with new schema columns)
-                self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, type, label)
-                    VALUES (?, ?, ?)
-                """, (source, '', source))
-
-                self.cursor.execute("""
-                    INSERT OR IGNORE INTO nodes (node_id, type, label)
-                    VALUES (?, ?, ?)
-                """, (target, '', target))
+                # Check if both source and target nodes exist in the database
+                self.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (source,))
+                source_exists = self.cursor.fetchone() is not None
+                
+                self.cursor.execute("SELECT 1 FROM nodes WHERE node_id = ?", (target,))
+                target_exists = self.cursor.fetchone() is not None
+                
+                # Skip edge if either node doesn't exist
+                if not source_exists or not target_exists:
+                    logger.debug(
+                        f"Row {row_num} in {csv_path}: Skipping edge - "
+                        f"source {repr(source)} exists={source_exists}, "
+                        f"target {repr(target)} exists={target_exists}"
+                    )
+                    missing_nodes_count += 1
+                    continue
 
                 # Insert edge with new column names
                 self.cursor.execute("""
@@ -560,6 +587,9 @@ class DatabaseBuilder:
                 ))
                 
                 edge_id = self.cursor.lastrowid
+                if edge_id is None:
+                    logger.warning(f"Failed to insert edge for row {row_num} in {csv_path}")
+                    continue
                 count += 1
                 
                 # Store evidence_class and dcc as edge properties
@@ -573,16 +603,18 @@ class DatabaseBuilder:
                     self._add_edge_property(edge_id, 'dcc', dcc)
 
             self.conn.commit()
+            
+            # Report skip reasons
+            skip_reasons = []
             if skipped_count > 0:
-                logger.warning(
-                    f"Loaded {count} edges from {csv_path} "
-                    f"(skipped {skipped_count} rows with empty source/target)"
-                )
-            elif sab_mismatch_count > 0:
-                logger.warning(
-                    f"Loaded {count} edges from {csv_path} "
-                    f"({sab_mismatch_count} SAB mismatches with filename)"
-                )
+                skip_reasons.append(f"{skipped_count} rows with empty source/target")
+            if missing_nodes_count > 0:
+                skip_reasons.append(f"{missing_nodes_count} edges with missing nodes")
+            if sab_mismatch_count > 0:
+                skip_reasons.append(f"{sab_mismatch_count} SAB mismatches with filename")
+            
+            if skip_reasons:
+                logger.warning(f"Loaded {count} edges from {csv_path} (skipped: {', '.join(skip_reasons)})")
             else:
                 logger.info(f"Loaded {count} edges from {csv_path}")
         except Exception as e:

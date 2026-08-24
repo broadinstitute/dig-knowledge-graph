@@ -25,27 +25,40 @@ Handles downloading and extracting zip files:
 ### `dd_build_db.py`
 Builds SQLite database from CSV files:
 - Auto-detects tab or comma delimiters
-- Loads node data (ID, name/label, type, and xrefs)
-- Loads edge data (source, target, relation, metadata)
-- Handles missing column headers (first column often has no header)
-- Extracts SAB (data source) from filename for xref processing
-- Applies configurable xref processing based on SAB + xref source (e.g., remove `.0` decimals)
-- Stores xref values as strings (after optional processing)
+- Validates node file headers (supports two formats)
+- Loads node data (ID, label, type, and identifiers)
+- Loads edge data (source, target, predicate, metadata) - only if both nodes exist in database
+- Stores identifiers in CURIE format (e.g., "UBERON:916")
+- Extracts SAB (data source) from filename for identifier processing
+- Applies configurable identifier processing based on SAB + identifier type (e.g., remove `.0` decimals)
+- Only creates nodes with at least one identifier
 - Supports batch commits or per-row commits (verbose mode)
+- Deduplicates identifiers with UNIQUE constraint
 
-### `ddkg_schema.sql`
-SQLite database schema with three tables:
-- **nodes**: node_id (PK), name (NOT NULL), type
-- **edges**: edge_id (PK auto), source (FK), target (FK), relation, sab, evidence_class, dcc
-- **xref**: xref_id (PK auto), node_id (FK), source, id
-- Indexes on foreign keys and common query fields
+### `kg_schema.sql`
+Normalized SQLite database schema with seven tables:
+- **nodes**: node_id (PK), type (NOT NULL), label (NOT NULL)
+- **edges**: edge_id (PK auto), source_node_id (FK), predicate (NOT NULL), target_node_id (FK), sab
+- **identifiers**: identifier_id (PK auto), node_id (FK), identifier_type, identifier_value (CURIE format, UNIQUE)
+- **properties**: property_id (PK auto), property_key, property_value, value_type (UNIQUE)
+- **node_properties**: many-to-many join table for nodes and properties
+- **edge_properties**: many-to-many join table for edges and properties
+- Essential indexes on foreign keys and common query fields
 
-### `xref_config.json`
-Configuration file for special processing of xref values:
-- Specifies which xref sources (SABs) need preprocessing
+### `kg_indexes.sql`
+Query performance indexes (created after data loading):
+- Indexes on edges (source, target, predicate)
+- Indexes on properties (lookup by node/edge and by property)
+- Indexes on identifiers (lookup by node_id and by type/value)
+- Indexes on nodes (lookup by type)
+
+### `dd_config.json`
+Configuration file for special processing of identifier values:
+- Specifies which identifier types (by SAB) need preprocessing
 - Currently supports `remove_decimal` type to strip `.0` from numeric identifiers
 - Warns if decimal part is non-zero (e.g., `916.5` instead of `916.0`)
 - Example: UBERON and FMA identifiers have `.0` suffix in CSV but should be stored as integers
+- Also specifies exclusion rules to skip certain identifier types per SAB
 
 ## Installation
 
@@ -59,24 +72,26 @@ pip install requests
 ```bash
 python data_distillery_kg.py -O
 ```
-- Downloads all files to `data/download/`
+- Downloads all files to `data/DataDistilleryKG/download/`
 - Extracts and processes CSVs
-- Creates fresh database at `data/ddkg.sqlite`
+- Creates fresh database at `data/DataDistilleryKG/ddkg.sqlite`
 - Uses `-O` flag to delete old database
 
 ### Download only (no clean)
 ```bash
-python data_distillery_kg.py -d -f data/download
+python data_distillery_kg.py -d
 ```
 - Downloads files if not already extracted
 - Keeps existing database
+- Uses default folders: `data/DataDistilleryKG/download/`
 
 ### Process existing files (no download)
 ```bash
-python data_distillery_kg.py -i data/download
+python data_distillery_kg.py -i data/DataDistilleryKG/download
 ```
 - Skips download entirely
 - Processes CSVs from specified folder
+- Optionally creates indexes with `-X` flag
 
 ### Force re-download all files
 ```bash
@@ -85,12 +100,21 @@ python data_distillery_kg.py -D -O
 - Forces download of all files (even if already extracted)
 - Cleans database and starts fresh
 
+### Process all folders with index creation
+```bash
+python data_distillery_kg.py -I -O
+```
+- `-I`: Process all folders found in download directory
+- Indexes are automatically created after all data loads
+- Creates single database from multiple source folders
+
 ### Verbose logging with file output
 ```bash
 python data_distillery_kg.py -O -v -l build.log
 ```
 - `-v`: Show debug output (commits after each node)
 - `-l build.log`: Write logs to file
+- `-X`: Create indexes after loading (for single-folder builds)
 
 ### Custom output paths
 ```bash
@@ -100,16 +124,33 @@ python data_distillery_kg.py -f data/raw -i data/processed -o mydb.sqlite
 - `-i data/processed`: Process CSVs from `data/processed/`
 - `-o mydb.sqlite`: Create database at `mydb.sqlite`
 
+### Final processing
+```bash
+python data_distillery_kg.py -O -D -I -o data/DataDistilleryKG/CFDE-DD-KG.sqlite -l data/DataDistilleryKG/CFDE-DD-KG.log -X
+```
+Complete production build with all features:
+- `-O`: Clean/delete old database to start fresh
+- `-D`: Force re-download all data files
+- `-I`: Process all folders in download directory into single database
+- `-o data/DataDistilleryKG/CFDE-DD-KG.sqlite`: Output to production database file
+- `-l data/DataDistilleryKG/CFDE-DD-KG.log`: Log all operations to file
+- `-X`: Create query indexes after all data loads (improves performance)
+
+This command performs a complete end-to-end build: downloads latest data, extracts, validates, deduplicates, and optimizes with indexes.
+
+
 ## Command-Line Arguments
 
 | Flag | Long | Description | Default |
 |------|------|-------------|---------|
 | `-d` | `--download` | Download if not yet extracted | False |
 | `-D` | `--force-download` | Force re-download all files | False |
-| `-f` | `--download-folder` | Folder for downloads/extracts | `data/download` |
-| `-i` | `--input-folder` | Input folder for CSV processing | `data/download` |
-| `-o` | `--output` | Output SQLite database file | `data/ddkg.sqlite` |
+| `-f` | `--download-folder` | Folder for downloads/extracts | `data/DataDistilleryKG/download` |
+| `-i` | `--input-folder` | Input folder for CSV processing | `data/DataDistilleryKG/download` |
+| `-o` | `--output` | Output SQLite database file | `data/DataDistilleryKG/ddkg.sqlite` |
 | `-O` | `--force-clean-db` | Delete old database and start fresh | False |
+| `-X` | `--index` | Create query indexes after loading | False |
+| `-I` | `--all-folders` | Process all folders in download directory | False |
 | `-l` | `--log` | Log file path (optional) | None |
 | `-v` | `--verbose` | Enable debug logging (per-row commits) | False |
 
@@ -123,10 +164,13 @@ Downloads are sourced from URLs in `data/DataDistillerySources.tsv`:
 ## CSV Format
 
 ### Node Files (*.nodes.csv)
-- **Column 1** (no header): node_id (UUID)
-- **Column 2** (label/name): Human readable name
+Supports two header formats:
+
+**Format 1 (Standard)**: `,label,type,identifier_types...`
+- **Column 1** (empty header): node_id (UUID)
+- **Column 2** (label): Human readable name
 - **Column 3** (type): Node classification
-- **Columns 4+** (SAB headers): External references as strings (e.g., "916.0")
+- **Columns 4+**: Identifier types (UBERON, FMA, HGNC, etc.) - e.g., "916.0"
 
 Example:
 ```
@@ -134,13 +178,29 @@ Example:
 c34f2608-e6ce-5541-8b02-3d5f9544ff12,Abdomen,Anatomy,916.0,9577.0,,
 ```
 
+**Format 2 (Alternative)**: `id,label,identifier_types...`
+- **Column 1** (id): node_id (UUID)
+- **Column 2** (label): Human readable name
+- **Columns 3+**: Identifier types - no type column
+- Node type extracted from filename: `<SAB>.<Type>.nodes.csv`
+
+Example (HGNCUNIPROT.Gene.nodes.csv):
+```
+id,label,HGNC
+021bbc1c-db72-5cb2-9662-989adb44b0f9,RBM47,4306
+```
+
+**Important**: Nodes without any identifiers are skipped and not stored in the database.
+
 ### Edge Files (*.edges.csv)
-- **source**: Source node_id
-- **target**: Target node_id
-- **relation**: Edge type
-- **SAB**: Source authority
-- **evidence_class**: Evidence type
-- **dcc**: Data coordination center
+- **source**: Source node_id (must exist in nodes table)
+- **target**: Target node_id (must exist in nodes table)
+- **relation**: Edge type (stored as predicate)
+- **SAB**: Source authority (extracted from filename if missing)
+- **evidence_class**: Evidence type (optional, stored as property)
+- **dcc**: Data coordination center (optional, stored as property)
+
+**Important**: Edges are only created if both source and target nodes exist in the database. Edges referencing missing nodes are skipped.
 
 ## Database Schema
 
@@ -148,8 +208,8 @@ c34f2608-e6ce-5541-8b02-3d5f9544ff12,Abdomen,Anatomy,916.0,9577.0,,
 ```sql
 CREATE TABLE nodes (
     node_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    type TEXT
+    type TEXT NOT NULL,
+    label TEXT NOT NULL
 );
 ```
 
@@ -157,43 +217,61 @@ CREATE TABLE nodes (
 ```sql
 CREATE TABLE edges (
     edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,
-    target TEXT NOT NULL,
-    relation TEXT,
+    source_node_id TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
     sab TEXT,
-    evidence_class TEXT,
-    dcc TEXT,
-    FOREIGN KEY (source) REFERENCES nodes(node_id),
-    FOREIGN KEY (target) REFERENCES nodes(node_id)
+    FOREIGN KEY (source_node_id) REFERENCES nodes(node_id),
+    FOREIGN KEY (target_node_id) REFERENCES nodes(node_id)
 );
 ```
 
-### xref table
+### identifiers table
 ```sql
-CREATE TABLE xref (
-    xref_id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE identifiers (
+    identifier_id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
-    source TEXT,
-    id TEXT,
-    FOREIGN KEY (node_id) REFERENCES nodes(node_id)
+    identifier_type TEXT NOT NULL,
+    identifier_value TEXT NOT NULL UNIQUE(node_id, identifier_type, identifier_value),
+    FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
 );
 ```
+
+Identifiers are stored in CURIE format: `{identifier_type}:{identifier_value}` (e.g., "UBERON:916")
+
+### properties table (normalized)
+```sql
+CREATE TABLE properties (
+    property_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    property_key TEXT NOT NULL,
+    property_value TEXT NOT NULL,
+    value_type TEXT NOT NULL,
+    UNIQUE(property_key, property_value, value_type)
+);
+```
+
+### node_properties and edge_properties tables (many-to-many)
+Link nodes/edges to their properties (evidence_class, dcc, etc.)
 
 ## Features
 
 - **Automatic delimiter detection**: Handles both tab and comma-separated CSV files
-- **Missing value handling**: Uses node_id as fallback for empty names (NOT NULL constraint)
-- **SAB-aware xref processing**: Extracts data source (SAB) from filename, applies source-specific processing rules
-- **Configurable xref transformation**: Map (SAB, xref_source) pairs to processing operations via `xref_config.json`
-- **String preservation**: Xref values stored as strings exactly as they appear (or after configured processing)
+- **Header validation**: Supports two node file header formats (with/without type column)
+- **Node filtering**: Only stores nodes with at least one identifier
+- **Edge validation**: Only creates edges if both source and target nodes exist in database
+- **SAB-aware identifier processing**: Extracts data source (SAB) from filename, applies source-specific processing rules
+- **Configurable identifier transformation**: Map (SAB, identifier_type) pairs to processing operations via `dd_config.json`
+- **CURIE format identifiers**: External identifiers stored in standard CURIE format with deduplication
+- **Normalized properties**: Edge metadata (evidence_class, dcc) deduplicated in properties tables
+- **Query indexes**: Separate index file (`kg_indexes.sql`) for optimal query performance after data loading
 - **Batch vs. per-row commits**: Normal mode batches commits; verbose mode (`-v`) commits after each node for better debugging
-- **Foreign key support**: Automatically creates placeholder nodes for edges referencing non-existent nodes
 - **Flexible paths**: Separate download folder from processing folder
+- **Multi-folder processing**: `-I` flag processes all folders into single database with automatic index creation
 - **Logging**: File logging, debug output, progress reporting
 
-## Xref Configuration
+## Identifier Configuration
 
-The `xref_config.json` file controls special processing of xref values by data source (SAB) and xref source:
+The `dd_config.json` file controls special processing of identifier values by data source (SAB) and identifier type:
 
 ```json
 {
@@ -202,24 +280,26 @@ The `xref_config.json` file controls special processing of xref values by data s
       "type": "remove_decimal",
       "description": "UBERON and FMA identifiers are integers, remove .0 suffix",
       "sources": {
-        "SPARC": [
-          "UBERON",
-          "FMA"
-        ]
+        "SPARC": ["UBERON", "FMA"],
+        "NPO": ["UBERON", "FMA"]
       }
     }
-  ]
+  ],
+  "xref_exclude": {
+    "NPO": ["SNOMEDCT_US"],
+    "SPARC": ["unwanted_column"]
+  }
 }
 ```
 
 ### Processing Rules
 
-Each rule contains:
+Each rule in `xref_processing` contains:
 - **type**: Processing operation (`remove_decimal`, etc.)
 - **description**: Human-readable explanation
-- **sources**: Map of SAB → list of xref sources to process
+- **sources**: Map of SAB → list of identifier types to process
   - SAB is extracted from filename (e.g., `SPARC.Anatomy.nodes.csv` → `SPARC`)
-  - Xref sources are column headers (e.g., `UBERON`, `FMA`)
+  - Identifier types are column headers (e.g., `UBERON`, `FMA`)
 
 ### Processing Types
 
@@ -227,75 +307,85 @@ Each rule contains:
   - Logs warning if decimal part is non-zero (e.g., `916.5`)
   - Keeps non-numeric values unchanged
 
-### Adding New Processing Rules
+### Exclusion Rules
 
-1. Edit `xref_config.json`
-2. Add new object to `xref_processing` array
-3. Specify processing type and description
-4. Map SAB names to lists of xref sources that need processing
-5. Restart the build process
+The `xref_exclude` section specifies identifier types to skip per SAB:
+- Map of SAB → list of identifier type names to exclude
+- Excluded identifiers will not be written to the database
+- Useful for skipping low-quality or redundant columns (e.g., SNOMEDCT_US)
 
-**Example**: Add decimal removal for NPO UBERON column:
+### Adding New Rules
+
+1. Edit `dd_config.json`
+2. For processing: Add new object to `xref_processing` array with type and SAB mappings
+3. For exclusions: Add SAB and list of identifier types to `xref_exclude`
+4. Restart the build process
+
+**Example**: Add decimal removal for NPO UBERON and exclude SNOMED:
 ```json
 {
-  "type": "remove_decimal",
-  "description": "NPO UBERON identifiers are integers",
-  "sources": {
-    "NPO": ["UBERON"]
-  }
-}
-```
-
-### Excluding Xref Sources
-
-You can exclude certain xref sources from being loaded into the database using `xref_exclude`:
-
-```json
-{
-  "xref_processing": [...],
+  "xref_processing": [
+    {
+      "type": "remove_decimal",
+      "sources": {"NPO": ["UBERON"]}
+    }
+  ],
   "xref_exclude": {
-    "SPARC": ["unwanted_source", "another_source"],
-    "NPO": ["excluded_column"]
+    "NPO": ["SNOMEDCT_US"]
   }
 }
 ```
-
-- **xref_exclude**: Map of SAB → list of xref source names to skip
-- Excluded sources will not be written to the database
-- Useful for skipping low-quality or redundant columns
 
 ## Examples
 
-### Start from scratch
+### Start from scratch (clean build)
 ```bash
-# Clean build: download, extract, and create fresh database
-python data_distillery_kg.py -D -O -v -l build.log
+# Download, extract, and create fresh database with indexes
+python data_distillery_kg.py -D -O -I -v -l build.log
 ```
+- `-D`: Force download all files
+- `-O`: Clean (delete) old database
+- `-I`: Process all folders and create indexes
+- `-v`: Verbose logging
+- `-l build.log`: Log to file
 
 ### Incremental builds
 ```bash
 # Download only new files, add to existing database
-python data_distillery_kg.py -d -i data/download
+python data_distillery_kg.py -d
 
 # Reprocess existing files without re-downloading
-python data_distillery_kg.py -i data/download
+python data_distillery_kg.py -I
 ```
 
-### Multi-folder workflow
+### Single folder with indexes
+```bash
+# Process one folder and create indexes
+python data_distillery_kg.py -i data/DataDistilleryKG/download/SPARC -X
+```
+
+### Custom paths workflow
 ```bash
 # Download to staging area
 python data_distillery_kg.py -D -f data/staging
 
 # Process from validation area
-python data_distillery_kg.py -i data/validated -o production.sqlite
+python data_distillery_kg.py -i data/validated -o production.sqlite -X
 ```
 
 ## Troubleshooting
 
-### "FOREIGN KEY constraint failed" on node load
-- Check that node_id column is not empty
-- Verify name column is populated (or node_id will be used as fallback)
-- Use `-v` flag to see which rows are causing issues
+### "No nodes loaded" or "Loaded 0 nodes"
+- Nodes without any identifiers are skipped - verify identifier columns have values
+- Check that node file has correct header format (Format 1 or Format 2)
+- Use `-v` flag to see debug details about which rows are skipped
+- Check `dd_config.json` for exclusion rules that might be removing all identifiers
+
+### "Skipped edges with missing nodes"
+- Edges require both source and target nodes to exist in database
+- If many edges are skipped, check that node files are processed before edge files
+- Use `-v` flag to see which edges are missing nodes
+- Verify node_id format matches between node and edge files
 
 ### "No CSV files found" warning
 - Verify download folder has subdirectories with `*.nodes.csv` and `*.edges.csv` files
@@ -303,7 +393,12 @@ python data_distillery_kg.py -i data/validated -o production.sqlite
 - Use `-D` to force re-download and extract
 
 ### Decimal values being stored (916.0 vs 916)
-- SPARC data UBERON and FMA columns are configured to remove `.0` suffix automatically via `xref_config.json`
-- Other data sources or xref sources store values exactly as they appear in CSVs
-- To add processing for other data sources, edit `xref_config.json` and add a rule mapping (SAB, xref_source) → processing type
+- SPARC and other data sources with UBERON/FMA are configured to remove `.0` suffix via `dd_config.json`
+- Other data sources or identifier types store values exactly as they appear in CSVs
+- To add processing for other data sources, edit `dd_config.json` and add a rule mapping (SAB, identifier_type) → processing type
 - Non-zero decimals (e.g., `916.5`) generate warnings but are kept as-is
+
+### Query performance issues
+- Use `-X` or `-I` flags to create query indexes after loading
+- Indexes are stored in `kg_indexes.sql` and created after all data loads
+- Indexes significantly improve query performance on large datasets
