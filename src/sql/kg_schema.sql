@@ -62,3 +62,11 @@ CREATE TABLE identifiers (
 
 -- Loading Index (required during bulk insert for deduplication)
 CREATE INDEX idx_properties_key_value ON properties(property_key, property_value);
+
+-- Merge Index (for database merge operations: find properties by value)
+CREATE INDEX idx_properties_value ON properties(property_value);
+
+-- Merge Index (for database merge operations: find identifiers by value)
+CREATE INDEX idx_identifiers_value ON identifiers(identifier_value);
+
+

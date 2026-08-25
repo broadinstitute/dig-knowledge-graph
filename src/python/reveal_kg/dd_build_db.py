@@ -98,18 +98,76 @@ class DatabaseManager:
                 logger.warning(f"Index file not found: {index_file}")
                 return
             
-            with open(index_file, 'r') as f:
+            with open(index_file, 'r', encoding='utf-8') as f:
                 index_sql = f.read()
             
+            # Normalize line endings (handle both Windows CRLF and Unix LF)
+            index_sql = index_sql.replace('\r\n', '\n').replace('\r', '\n')
+            
             logger.info("Creating query performance indexes...")
-            # Execute all statements in the index file
-            for statement in index_sql.split(';'):
-                statement = statement.strip()
-                if statement and not statement.startswith('--'):
+            
+            # Split into individual statements and log each one
+            statements = []
+            raw_statements = index_sql.split(';')
+            logger.info(f"Total segments after split by ';': {len(raw_statements)}")
+            
+            for i, segment in enumerate(raw_statements):
+                # Remove all comment lines from the segment
+                lines = segment.split('\n')
+                sql_lines = [line for line in lines if line.strip() and not line.strip().startswith('--')]
+                
+                # Rejoin to get the pure SQL
+                statement = '\n'.join(sql_lines).strip()
+                
+                # Skip if nothing remains after removing comments
+                if not statement:
+                    logger.debug(f"  Segment {i}: Skipped (empty or comments only)")
+                    continue
+                
+                statements.append(statement)
+                logger.debug(f"  Segment {i}: Parsed statement {len(statements)}: {statement[:80]}")
+            
+            logger.info(f"Found {len(statements)} index statements to create")
+            created_count = 0
+            errors = []
+            
+            # Execute each statement with detailed logging
+            for i, statement in enumerate(statements, 1):
+                # Extract index name for logging
+                index_name = "Unknown"
+                if "CREATE INDEX" in statement.upper():
+                    parts = statement.split()
+                    for j, part in enumerate(parts):
+                        if part.upper() == "INDEX" and j + 1 < len(parts):
+                            index_name = parts[j + 1]
+                            break
+                
+                try:
+                    logger.debug(f"[{i}/{len(statements)}] Executing: {statement[:80]}...")
                     self.cursor.execute(statement)
+                    logger.info(f"✓ Index created: {index_name}")
+                    created_count += 1
+                except sqlite3.Error as e:
+                    error_msg = f"✗ Index {index_name}: {str(e)}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                except Exception as e:
+                    error_msg = f"✗ Index {index_name}: Unexpected error: {str(e)}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
             
             self.conn.commit()
-            logger.info("Query performance indexes created successfully")
+            
+            # Summary
+            total = len(statements)
+            logger.info(f"Query performance index creation complete: {created_count}/{total} successful")
+            
+            if errors:
+                logger.warning(f"{len(errors)} indexes failed to create:")
+                for error in errors:
+                    logger.warning(f"  {error}")
+                if created_count == 0:
+                    raise RuntimeError(f"All {total} index creation attempts failed")
         except Exception as e:
             logger.error(f"Failed to create indexes: {e}")
             raise
@@ -579,7 +637,10 @@ class DataBuilder:
                 # First ensure source and target nodes exist
                 source = row.get('source', '').strip()
                 target = row.get('target', '').strip()
-                sab = row.get('SAB', '').strip()
+                
+                # Handle both 'SAB' and 'sab' (case-insensitive)
+                sab = row.get('SAB', '') or row.get('sab', '')
+                sab = sab.strip()
 
                 # Skip rows with empty source or target
                 if not source or not target:
@@ -621,12 +682,15 @@ class DataBuilder:
                     continue
 
                 # Insert edge with new column names
+                # Handle case-insensitive column names for relation, evidence_class, dcc
+                relation = (row.get('relation', '') or row.get('Relation', '')).strip()
+                
                 self.db.cursor.execute("""
                     INSERT INTO edges (source_node_id, predicate, target_node_id, sab)
                     VALUES (?, ?, ?, ?)
                 """, (
                     source,
-                    row.get('relation'),
+                    relation,
                     target,
                     sab
                 ))
@@ -637,9 +701,9 @@ class DataBuilder:
                     continue
                 count += 1
                 
-                # Store evidence_class and dcc as edge properties
-                evidence_class = row.get('evidence_class', '').strip()
-                dcc = row.get('dcc', '').strip()
+                # Store evidence_class and dcc as edge properties (case-insensitive)
+                evidence_class = (row.get('evidence_class', '') or row.get('evidence_Class', '') or row.get('Evidence_Class', '')).strip()
+                dcc = (row.get('dcc', '') or row.get('DCC', '')).strip()
                 
                 if evidence_class:
                     self._add_edge_property(edge_id, 'evidence_class', evidence_class)
