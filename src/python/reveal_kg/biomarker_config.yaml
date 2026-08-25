@@ -37,5 +37,5 @@ edges:
 
 # Bulk loading settings
 loading:
-  batch_size: 5000  # Number of rows to process before committing
+  batch_size: 50000  # Number of rows to process before committing
   skip_duplicates: true  # Skip duplicate nodes/edges if they already exist

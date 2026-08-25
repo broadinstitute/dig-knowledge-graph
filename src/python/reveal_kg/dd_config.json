@@ -1,0 +1,152 @@
+{
+  "xref_processing": [
+    {
+      "type": "remove_decimal",
+      "description": "Identifiers are integers, remove .0 suffix",
+      "sources": {
+        "ARCHS4": [
+          "ENTREZ",
+          "HGNC",
+          "OMIM",
+          "ORDO"
+        ],
+        "CLINVAR": [
+          "ENTREZ",
+          "MONDO",
+          "OMIM",
+          "ORDO"
+        ],
+        "ERCCRBP": [
+          "ENTREZ",
+          "FMA",
+          "OMIM"
+        ],
+        "ERCCREG": [
+          "CHV",
+          "FMA",
+          "HGNC",
+          "SNOMEDCT_US",
+          "UWDA"
+        ],
+        "GTEXEQTL": [
+          "CHV",
+          "ENTREZ",
+          "FMA",
+          "OMIM",
+          "SNOMEDCT_US",
+          "UBERON",
+          "UWDA"
+        ],
+        "GTEXEXP": [
+          "CHV",
+          "ENTREZ",
+          "FMA",
+          "SNOMEDCT_US",
+          "UBERON",
+          "UWDA"
+        ],
+        "HGNCHPO": [
+          "ENTREZ",
+          "MDR",
+          "OMIM",
+          "ORDO"
+        ],
+        "AZ": [
+          "CL"
+        ],
+        "HMAZ": [
+          "CL",
+          "ENTREZ",
+          "OMIM"
+        ],
+        "IDGD": [
+          "CHV",
+          "DOID",
+          "EFO",
+          "MDR",
+          "MEDCIN",
+          "MONDO"
+        ],
+        "KF": [
+          "CHV",
+          "DOID",
+          "ENTREZ",
+          "MDR",
+          "MEDCIN",
+          "MONDO",
+          "OMIM",
+          "SNOMEDCT_US"
+        ],
+        "LINCS": [
+          "ENTREZ",
+          "HGNC",
+          "OMIM"
+        ],
+        "MSIGDB": [
+          "ENTREZ"
+        ],
+        "MW": [
+          "CHV",
+          "DOID",
+          "EFO",
+          "ENTREZ",
+          "FMA",
+          "MDR",
+          "MEDCIN",
+          "MONDO",
+          "OMIM",
+          "ORDO",
+          "PUBCHEM",
+          "SNOMEDCT_US",
+          "UBERON",
+          "UWDA"
+        ],
+        "MOTRPAC": [
+          "AZ",
+          "PSY"
+        ],
+        "NPO": [
+          "FMA",
+          "NCBI",
+          "SNOMEDCT_US",
+          "UBERON"
+        ],
+        "hgnc_enzyme": [
+          "ENTREZ",
+          "OMIM",
+          "ORDO"
+        ]
+      }
+    }
+  ],
+  "xref_exclude": {
+    "ERCCRBP": [
+      "SNOMEDCT_US"
+    ],
+    "ERCCREG": [
+      "SNOMEDCT_US"
+    ],
+    "GTEXEQTL": [
+      "SNOMEDCT_US"
+    ],
+    "GTEXEXP": [
+      "SNOMEDCT_US"
+    ],
+    "IDGD": [
+      "SNOMEDCT_US"
+    ],
+    "KF": [
+      "SNOMEDCT_US"
+    ],
+    "MW": [
+      "PUBMED",
+      "SNOMEDCT_US"
+    ],
+    "MOTRPAC": [
+      "SNOMEDCT_US"
+    ],
+    "NPO": [
+      "SNOMEDCT_US"
+    ]
+  }
+}
