@@ -1,20 +1,35 @@
 # CFDE REVEAL Knowledge Graph Data Distillery
 
-A Python utility to download, extract, and build a SQLite knowledge graph database from CFDE (Common Fund Data Ecosystem) REVEAL data sources.
+A Python utility to download, extract, and build SQLite knowledge graph databases from multiple data sources. 
+
+## Supported Knowledge Graphs
+
+Currently supported:
+- **Data Distillery Knowledge Graph**: CFDE (Common Fund Data Ecosystem) REVEAL data sources
+- **Biomarker Knowledge Graph**: Biomarker-specific CSV data
+
+Future support:
+- (Additional knowledge graphs to be integrated)
 
 ## Overview
 
 The Data Distillery automates the process of:
-1. **Downloading** zip files containing CFDE data from multiple sources (SPARC, etc.)
-2. **Extracting** CSV files from those archives
-3. **Building** a SQLite database with a normalized schema for nodes, edges, and cross-references
+1. **Downloading** data files from multiple sources
+2. **Extracting** and validating CSV files
+3. **Building** SQLite databases with normalized schemas for nodes, edges, and cross-references
+
+Two independent pipelines are provided:
+- **CFDE Data Distillery**: Download and build knowledge graph from Common Fund data sources (SPARC, etc.)
+- **Biomarker KG Loader**: Load pre-downloaded biomarker CSV data into knowledge graph database
 
 ## Components
 
-### `data_distillery_kg.py`
-Main CLI entry point with flexible command-line arguments to control download and database building.
+### Data Distillery Knowledge Graph (CFDE)
 
-### `dd_download.py`
+#### `data_distillery_kg.py`
+Main CLI entry point for downloading and building CFDE knowledge graph database with flexible command-line arguments.
+
+#### `dd_download.py`
 Handles downloading and extracting zip files:
 - Reads download URLs from `data/DataDistillerySources.tsv` (column 7)
 - Downloads files with progress logging
@@ -22,8 +37,8 @@ Handles downloading and extracting zip files:
 - Cleans up partial folders on extraction failure
 - Checks if data is already extracted before re-downloading
 
-### `dd_build_db.py`
-Builds SQLite database from CSV files:
+#### `dd_build_db.py`
+Builds SQLite database from CFDE CSV files:
 - Auto-detects tab or comma delimiters
 - Validates node file headers (supports two formats)
 - Loads node data (ID, label, type, and identifiers)
@@ -35,8 +50,38 @@ Builds SQLite database from CSV files:
 - Supports batch commits or per-row commits (verbose mode)
 - Deduplicates identifiers with UNIQUE constraint
 
-### `kg_schema.sql`
-Normalized SQLite database schema with seven tables:
+#### `dd_config.json`
+Configuration file for special processing of CFDE identifier values:
+- Specifies which identifier types (by SAB) need preprocessing
+- Currently supports `remove_decimal` type to strip `.0` from numeric identifiers
+- Warns if decimal part is non-zero (e.g., `916.5` instead of `916.0`)
+- Example: UBERON and FMA identifiers have `.0` suffix in CSV but should be stored as integers
+- Also specifies exclusion rules to skip certain identifier types per SAB
+
+### Biomarker Knowledge Graph
+
+#### `biomarker_kg.py`
+Loads biomarker-specific CSV data into SQLite database:
+- Reads semantic type mappings from `biomarker_config.yaml`
+- Generates UUID for each node (consistent with backup database format)
+- Stores original identifiers (e.g., "HGNC:1234") in identifiers table
+- Maps original node IDs to UUIDs for edge loading
+- Uses batch processing for efficient database inserts
+- Supports configurable batch size and deduplication settings
+- Populates `sab` field with "BIOMARKER" default from config
+- Uses config-driven node type mapping (e.g., "HGNC" → "gene", "CHEBI" → "chemical")
+
+#### `biomarker_config.yaml`
+Configuration for biomarker data loading:
+- **nodes.types**: Map filename prefixes to semantic types (HGNC → gene, CHEBI → chemical, etc.)
+- **edges.default_sab**: Default data source abbreviation ("BIOMARKER")
+- **loading.batch_size**: Number of rows per batch commit (5000)
+- **loading.skip_duplicates**: Skip duplicate node IDs if already loaded
+
+### Shared Components
+
+#### `kg_schema.sql`
+Normalized SQLite database schema with seven tables (used by both pipelines):
 - **nodes**: node_id (PK), type (NOT NULL), label (NOT NULL)
 - **edges**: edge_id (PK auto), source_node_id (FK), predicate (NOT NULL), target_node_id (FK), sab
 - **identifiers**: identifier_id (PK auto), node_id (FK), identifier_type, identifier_value (CURIE format, UNIQUE)
@@ -45,20 +90,18 @@ Normalized SQLite database schema with seven tables:
 - **edge_properties**: many-to-many join table for edges and properties
 - Essential indexes on foreign keys and common query fields
 
-### `kg_indexes.sql`
+#### `kg_indexes.sql`
 Query performance indexes (created after data loading):
 - Indexes on edges (source, target, predicate)
 - Indexes on properties (lookup by node/edge and by property)
 - Indexes on identifiers (lookup by node_id and by type/value)
 - Indexes on nodes (lookup by type)
 
-### `dd_config.json`
-Configuration file for special processing of identifier values:
-- Specifies which identifier types (by SAB) need preprocessing
-- Currently supports `remove_decimal` type to strip `.0` from numeric identifiers
-- Warns if decimal part is non-zero (e.g., `916.5` instead of `916.0`)
-- Example: UBERON and FMA identifiers have `.0` suffix in CSV but should be stored as integers
-- Also specifies exclusion rules to skip certain identifier types per SAB
+#### `kg_database.py`
+Isolated SQLite database lifecycle management (used by both pipelines):
+- Connection management with foreign key constraints
+- Schema initialization and creation
+- Index creation with detailed logging
 
 ## Installation
 
@@ -68,7 +111,9 @@ pip install requests
 
 ## Usage
 
-### Basic: Download and build database (clean)
+### Data Distillery Knowledge Graph (CFDE)
+
+#### Basic: Download and build database (clean)
 ```bash
 python data_distillery_kg.py -O
 ```
@@ -77,7 +122,7 @@ python data_distillery_kg.py -O
 - Creates fresh database at `data/DataDistilleryKG/ddkg.sqlite`
 - Uses `-O` flag to delete old database
 
-### Download only (no clean)
+#### Download only (no clean)
 ```bash
 python data_distillery_kg.py -d
 ```
@@ -85,7 +130,7 @@ python data_distillery_kg.py -d
 - Keeps existing database
 - Uses default folders: `data/DataDistilleryKG/download/`
 
-### Process existing files (no download)
+#### Process existing files (no download)
 ```bash
 python data_distillery_kg.py -i data/DataDistilleryKG/download
 ```
@@ -93,14 +138,14 @@ python data_distillery_kg.py -i data/DataDistilleryKG/download
 - Processes CSVs from specified folder
 - Optionally creates indexes with `-X` flag
 
-### Force re-download all files
+#### Force re-download all files
 ```bash
 python data_distillery_kg.py -D -O
 ```
 - Forces download of all files (even if already extracted)
 - Cleans database and starts fresh
 
-### Process all folders with index creation
+#### Process all folders with index creation
 ```bash
 python data_distillery_kg.py -I -O
 ```
@@ -108,7 +153,7 @@ python data_distillery_kg.py -I -O
 - Indexes are automatically created after all data loads
 - Creates single database from multiple source folders
 
-### Verbose logging with file output
+#### Verbose logging with file output
 ```bash
 python data_distillery_kg.py -O -v -l build.log
 ```
@@ -116,7 +161,7 @@ python data_distillery_kg.py -O -v -l build.log
 - `-l build.log`: Write logs to file
 - `-X`: Create indexes after loading (for single-folder builds)
 
-### Custom output paths
+#### Custom output paths
 ```bash
 python data_distillery_kg.py -f data/raw -i data/processed -o mydb.sqlite
 ```
@@ -124,11 +169,11 @@ python data_distillery_kg.py -f data/raw -i data/processed -o mydb.sqlite
 - `-i data/processed`: Process CSVs from `data/processed/`
 - `-o mydb.sqlite`: Create database at `mydb.sqlite`
 
-### Final processing
+#### Production build (recommended)
 ```bash
 python data_distillery_kg.py -O -D -I -o data/DataDistilleryKG/CFDE-DD-KG.sqlite -l data/DataDistilleryKG/CFDE-DD-KG.log -X
 ```
-Complete production build with all features:
+Complete end-to-end build with all features:
 - `-O`: Clean/delete old database to start fresh
 - `-D`: Force re-download all data files
 - `-I`: Process all folders in download directory into single database
@@ -136,10 +181,87 @@ Complete production build with all features:
 - `-l data/DataDistilleryKG/CFDE-DD-KG.log`: Log all operations to file
 - `-X`: Create query indexes after all data loads (improves performance)
 
-This command performs a complete end-to-end build: downloads latest data, extracts, validates, deduplicates, and optimizes with indexes.
+### Biomarker Knowledge Graph
 
+#### Basic biomarker loading with clean database
+```bash
+python biomarker_kg.py -i data/BiomarkerKG -o data/biomarker_kg.sqlite -O
+```
+- `-i data/BiomarkerKG`: Input folder with `*.nodes.csv` and `*.edges.csv` files
+- `-o data/biomarker_kg.sqlite`: Output database file
+- `-O`: Delete old database and start fresh
+
+#### With indexes and verbose logging
+```bash
+python biomarker_kg.py -i data/BiomarkerKG -o data/biomarker_kg.sqlite -O -X -v -l biomarker.log
+```
+- `-X`: Create query performance indexes after loading
+- `-v`: Show debug output and per-batch logging
+- `-l biomarker.log`: Write logs to file
+
+#### Production build (recommended)
+```bash
+python biomarker_kg.py -i data/BiomarkerKG/processed -o data/BiomarkerKG/CFDE_Biomarker_KG.sqlite -O -l data/BiomarkerKG/CFDE_Biomarker_KG.log -X
+```
+Complete production build with all features:
+- `-i data/BiomarkerKG/processed`: Load from processed biomarker data folder
+- `-o data/BiomarkerKG/CFDE_Biomarker_KG.sqlite`: Output to production database file
+- `-O`: Delete old database and start fresh
+- `-l data/BiomarkerKG/CFDE_Biomarker_KG.log`: Log all operations to file
+- `-X`: Create query indexes after loading (improves performance)
+
+#### Node Type Mapping (Biomarker KG)
+
+Biomarker nodes are categorized by semantic type based on filename prefix (configured in `biomarker_config.yaml`):
+
+| Prefix | Type | Example |
+|--------|------|---------|
+| BIOMARKER | biomarker | BIOMARKER.nodes.csv |
+| HGNC | gene | HGNC.nodes.csv |
+| CHEBI | chemical | CHEBI.nodes.csv |
+| DOID | disease | DOID.nodes.csv |
+| UNIPROTKB | protein | UNIPROTKB.nodes.csv |
+| PR | protein | PR.nodes.csv |
+| CL | cell | CL.nodes.csv |
+| UBERON | anatomical_structure | UBERON.nodes.csv |
+
+#### Node ID Strategy (Biomarker KG)
+
+Biomarker nodes use **UUID-based identifiers** for compatibility with merge operations:
+- Each loaded node gets a unique UUID (e.g., `500d6255-6837-44d6-8010-65e989e0e16b`)
+- Original identifiers (e.g., `HGNC:1234`) are stored in the `identifiers` table
+- Edges reference nodes by UUID, not original identifier
+- This allows proper mapping when merging multiple knowledge graphs
+
+#### CSV Format (Biomarker KG)
+
+**Node Files (*.nodes.csv)**
+- **id** or **node_id**: Unique node identifier (e.g., "HGNC:12345" or "CHEBI:15377")
+- **label** or **name**: Human-readable node label
+- **type** (optional): Node type (overridden by config-driven mapping from filename prefix)
+
+Example (HGNC.nodes.csv):
+```
+id,label
+HGNC:1234,TP53
+HGNC:2042,RBM47
+```
+
+**Edge Files (*.edges.csv)**
+- **source**: Source node identifier (must match loaded node ID)
+- **target**: Target node identifier (must match loaded node ID)
+- **relation**: Edge predicate/relationship type
+- **SAB** (optional): Source authority (defaults to "BIOMARKER" from config)
+
+Example:
+```
+source,target,relation,SAB
+HGNC:1234,CHEBI:15377,associated_with,BIOMARKER
+```
 
 ## Command-Line Arguments
+
+### Data Distillery Knowledge Graph (data_distillery_kg.py)
 
 | Flag | Long | Description | Default |
 |------|------|-------------|---------|
@@ -154,14 +276,27 @@ This command performs a complete end-to-end build: downloads latest data, extrac
 | `-l` | `--log` | Log file path (optional) | None |
 | `-v` | `--verbose` | Enable debug logging (per-row commits) | False |
 
-## Data Source
+### Biomarker Knowledge Graph (biomarker_kg.py)
+
+| Flag | Long | Description | Default |
+|------|------|-------------|---------|
+| `-i` | `--input-folder` | Input folder with CSV files | *required* |
+| `-o` | `--output` | Output SQLite database file | `data/biomarker_kg.sqlite` |
+| `-O` | `--force-clean-db` | Delete old database and start fresh | False |
+| `-X` | `--index` | Create query indexes after loading | False |
+| `-l` | `--log` | Log file path (optional) | None |
+| `-v` | `--verbose` | Enable debug logging | False |
+
+## Data Sources
+
+### Data Distillery Knowledge Graph
 
 Downloads are sourced from URLs in `data/DataDistillerySources.tsv`:
 - Column 7 contains download URLs
 - Files are organized by source (SPARC, etc.)
 - Extracted CSVs follow naming pattern: `*.nodes.csv` and `*.edges.csv`
 
-## CSV Format
+## CSV Format (Data Distillery)
 
 ### Node Files (*.nodes.csv)
 Supports two header formats:
@@ -269,9 +404,9 @@ Link nodes/edges to their properties (evidence_class, dcc, etc.)
 - **Multi-folder processing**: `-I` flag processes all folders into single database with automatic index creation
 - **Logging**: File logging, debug output, progress reporting
 
-## Identifier Configuration
+## Identifier Configuration (Data Distillery)
 
-The `dd_config.json` file controls special processing of identifier values by data source (SAB) and identifier type:
+The `dd_config.json` file controls special processing of identifier values by data source (SAB) and identifier type in the Data Distillery pipeline:
 
 ```json
 {
@@ -336,7 +471,7 @@ The `xref_exclude` section specifies identifier types to skip per SAB:
 }
 ```
 
-## Examples
+## Examples (Data Distillery)
 
 ### Start from scratch (clean build)
 ```bash
@@ -373,7 +508,7 @@ python data_distillery_kg.py -D -f data/staging
 python data_distillery_kg.py -i data/validated -o production.sqlite -X
 ```
 
-## Troubleshooting
+## Troubleshooting (Data Distillery)
 
 ### "No nodes loaded" or "Loaded 0 nodes"
 - Nodes without any identifiers are skipped - verify identifier columns have values

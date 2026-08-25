@@ -10,7 +10,8 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from dd_download import DataDownloader
-from dd_build_db import DatabaseManager, DataBuilder
+from kg_database import DatabaseManager
+from dd_build_db import DataBuilder
 
 # Configure logging
 logging.basicConfig(
