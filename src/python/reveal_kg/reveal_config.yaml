@@ -1,0 +1,18 @@
+nodes_file_name: "node_mapping_summary.csv"
+edge_file_name: "cfde_kg_v1.csv"
+batch_size: 50000
+
+# URL to prefix mapping for identifiers without underscore separator
+url_prefix_mapping:
+  "http://purl.obolibrary.org/obo/CHEBI_": "CHEBI"
+  "http://purl.obolibrary.org/obo/GO_": "GO"
+  "http://purl.obolibrary.org/obo/HP_": "HP"
+  "http://purl.obolibrary.org/obo/MONDO_": "MONDO"
+  "http://purl.obolibrary.org/obo/NBO_": "NBO"
+  "http://purl.obolibrary.org/obo/NCIT_": "NCIT"
+  "http://purl.obolibrary.org/obo/OBA_": "OBA"
+  "http://purl.obolibrary.org/obo/PATO_": "PATO"
+  "http://purl.obolibrary.org/obo/PR_": "PR"
+  "http://www.ebi.ac.uk/efo/EFO_": "EFO"
+  "http://www.ncbi.nlm.nih.gov/gene/": "NCBIGene"
+  "http://www.orpha.net/ORDO/Orphanet_": "ORPHA"
