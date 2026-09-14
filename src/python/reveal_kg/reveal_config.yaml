@@ -1,6 +1,7 @@
 nodes_file_name: "node_mapping_summary.csv"
 edge_file_name: "cfde_kg_v1.csv"
 batch_size: 50000
+edge_sab: "REVEAL"
 
 # URL to prefix mapping for identifiers without underscore separator
 url_prefix_mapping:

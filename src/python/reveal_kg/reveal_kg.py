@@ -41,13 +41,12 @@ class RevealDataBuilder:
         self.nodes_file_name = config.get('nodes_file_name', 'nodes.csv')
         self.edge_file_name = config.get('edge_file_name', 'edges.csv')
         self.batch_size = config.get('batch_size', 50000)
+        self.edge_sab = config.get('edge_sab', 'REVEAL')
         # Build reverse mapping: base_iri -> prefix for CURIE generation
         self.base_iri_to_prefix = config.get('url_prefix_mapping', {})
         
-        self.node_id_mapping: Dict[str, str] = {}  # (node_type, label) -> UUID
+        self.node_id_mapping: Dict[Tuple[str, str], str] = {}  # (node_type, label) -> UUID
         self.node_cache: set = set()  # node_ids already in DB
-        self.node_type_status_pairs: set = set()  # (node_type, mapping_status, iri_prefix) tuples
-        self.node_type_status_pairs: set = set()  # (node_type, mapping_status) pairs
 
     def load_folder(self, folder_path: str):
         """
@@ -75,11 +74,15 @@ class RevealDataBuilder:
 
         # Build mapping from (node_type, label) to UUIDs for edge loading
         self._build_node_id_mapping()
-        
-        # Print distinct (node_type, mapping_status) pairs
-        self._print_node_type_status_summary()        
-        # Print collected external base IRIs in YAML format
-        self._print_external_base_iris_yaml()
+
+        # Load edges file
+        edges_file = folder / self.edge_file_name
+        if edges_file.exists():
+            logger.info(f"Loading edges from {self.edge_file_name}")
+            self._load_edges_from_file(str(edges_file))
+        else:
+            logger.warning(f"Edges file not found: {edges_file.name}")
+
         logger.info("Data loading completed")
 
     def _extract_iri_prefix(self, iri: str) -> str:
@@ -183,12 +186,6 @@ class RevealDataBuilder:
                 if not node_iri:
                     continue
                 
-                # Extract meaningful IRI prefix
-                iri_prefix = self._extract_iri_prefix(node_iri)
-                
-                # Track (node_type, mapping_status, iri_prefix) tuple
-                self.node_type_status_pairs.add((node_type, mapping_status, iri_prefix))
-                
                 # Generate UUID for this node
                 node_uuid = str(uuid.uuid4())
                 
@@ -221,40 +218,6 @@ class RevealDataBuilder:
             self.db.conn.rollback()
             raise
 
-    def _print_node_type_status_summary(self):
-        """Print all distinct (node_type, mapping_status, iri_prefix) tuples found."""
-        if not self.node_type_status_pairs:
-            logger.info("No node type/status pairs found")
-            return
-        
-        logger.info(f"\nDistinct (node_type, mapping_status, iri_prefix) tuples ({len(self.node_type_status_pairs)} total):")
-        for node_type, mapping_status, iri_prefix in sorted(self.node_type_status_pairs):
-            logger.info(f"  ({node_type!r}, {mapping_status!r}, {iri_prefix!r})")
-
-    def _print_external_base_iris_yaml(self):
-        """Print collected external base IRIs as a dict mapping base_iri -> prefix."""
-        # Collect mapping of base IRI to prefix
-        iris_dict = {}
-        for node_type, mapping_status, iri_prefix in self.node_type_status_pairs:
-            if mapping_status.startswith('external_') and iri_prefix != 'unknown':
-                # Extract prefix from the base IRI (last segment or last segment before trailing /)
-                if iri_prefix.endswith('/'):
-                    # For NCBI: http://www.ncbi.nlm.nih.gov/gene/ -> gene
-                    prefix_key = iri_prefix.rstrip('/').split('/')[-1]
-                else:
-                    # For EFO: http://purl.obolibrary.org/obo/EFO -> EFO
-                    prefix_key = iri_prefix.split('/')[-1]
-                
-                iris_dict[iri_prefix] = prefix_key
-        
-        if not iris_dict:
-            print("\nNo external base IRIs found")
-            return
-        
-        print("\n# Add the following to reveal_config.yaml under url_prefix_mapping:")
-        for base_iri in sorted(iris_dict.keys()):
-            print(f"  \"{base_iri}\": \"{iris_dict[base_iri]}\"")
-
     def _insert_nodes_batch(self, batch: List[Tuple[str, str, str]], identifiers_batch: List[Tuple[str, str, str]]):
         """Insert a batch of nodes and their identifiers."""
         assert self.db.cursor is not None and self.db.conn is not None
@@ -279,7 +242,7 @@ class RevealDataBuilder:
         try:
             self.db.cursor.execute('SELECT type, label, node_id FROM nodes')
             for node_type, label, node_uuid in self.db.cursor.fetchall():
-                key = (node_type, label)
+                key = (str(node_type), str(label))
                 self.node_id_mapping[key] = node_uuid
             logger.info(f"Built mapping for {len(self.node_id_mapping)} nodes")
         except Exception as e:
@@ -288,18 +251,132 @@ class RevealDataBuilder:
 
     def _load_edges_from_file(self, csv_path: str):
         """Load edges from a CSV file."""
-        # TODO: Implement edge loading from CSV
-        pass
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                # Detect delimiter
+                first_line = f.readline()
+                f.seek(0)
+                delimiter = '\t' if '\t' in first_line else ','
+                
+                reader = csv.DictReader(f, delimiter=delimiter)
+                self._load_edges(reader, csv_path)
+        except Exception as e:
+            logger.error(f"Failed to load {csv_path}: {e}")
+            raise
 
     def _load_edges(self, reader, csv_path: str):
         """Load edges from CSV reader using UUID mappings and batch processing."""
-        # TODO: Implement edge loading logic with batch processing
-        pass
+        count = 0
+        skipped = 0
+        batch: List[Tuple[str, str, str, str]] = []  # (source_node_id, predicate, target_node_id, sab)
+        property_batch: List[Tuple[int, int]] = []  # Will be populated in _insert_edges_batch
+        weights: List[Tuple[int, str, str]] = []  # (edge_idx, property_value, value_type) for delayed insert
+        assert self.db.cursor is not None and self.db.conn is not None
+        
+        try:
+            for row_num, row in enumerate(reader, 1):
+                source = (row.get('Source') or '').strip()
+                source_type = (row.get('Source_Type') or '').strip()
+                target = (row.get('Target') or '').strip()
+                target_type = (row.get('Target_Type') or '').strip()
+                edge_type = (row.get('Edge_Type') or '').strip()
+                weight = (row.get('Weight') or '').strip()
+                
+                # Look up source and target nodes by (type, label)
+                source_key = (source_type, source)
+                target_key = (target_type, target)
+                
+                source_node_id = self.node_id_mapping.get(source_key)
+                target_node_id = self.node_id_mapping.get(target_key)
+                
+                if not source_node_id:
+                    logger.warning(f"Source node not found: type={source_type}, label={source}")
+                    skipped += 1
+                    continue
+                
+                if not target_node_id:
+                    logger.warning(f"Target node not found: type={target_type}, label={target}")
+                    skipped += 1
+                    continue
+                
+                # Add edge to batch with sab from config
+                batch.append((source_node_id, edge_type, target_node_id, self.edge_sab))
+                
+                # Track weight if present
+                if weight:
+                    weights.append((len(batch) - 1, weight, 'float'))
+                
+                count += 1
+                
+                # Insert batch when it reaches batch_size
+                if len(batch) >= self.batch_size:
+                    self._insert_edges_batch(batch, weights)
+                    batch = []
+                    weights = []
+            
+            # Insert remaining batch
+            if batch:
+                self._insert_edges_batch(batch, weights)
+            
+            logger.info(f"Loaded {count} edges from {csv_path} (skipped: {skipped})")
+        except Exception as e:
+            logger.error(f"Failed to load edges: {e}")
+            self.db.conn.rollback()
+            raise
 
-    def _insert_edges_batch(self, batch: List[Tuple[str, str, str, str]]):
-        """Insert a batch of edges."""
-        # TODO: Implement batch insert for edges
-        pass
+    def _insert_edges_batch(self, batch: List[Tuple[str, str, str, str]], weights: List[Tuple[int, str, str]]):
+        """Insert a batch of edges and their properties (weight)."""
+        assert self.db.cursor is not None and self.db.conn is not None
+        try:
+            # Insert edges
+            self.db.cursor.executemany(
+                'INSERT INTO edges (source_node_id, predicate, target_node_id, sab) VALUES (?, ?, ?, ?)',
+                batch
+            )
+            
+            # Get the edge IDs of the inserted edges
+            # Query the last inserted edges to get their IDs
+            self.db.cursor.execute(
+                'SELECT edge_id FROM edges ORDER BY edge_id DESC LIMIT ?',
+                (len(batch),)
+            )
+            edge_ids = [row[0] for row in reversed(self.db.cursor.fetchall())]
+            
+            # Process weights and create edge properties
+            for edge_idx, weight_value, value_type in weights:
+                if edge_idx >= len(edge_ids):
+                    logger.warning(f"Weight index {edge_idx} out of range for {len(edge_ids)} edges")
+                    continue
+                
+                edge_id = edge_ids[edge_idx]
+                
+                # Get or create property for this weight value
+                self.db.cursor.execute(
+                    'INSERT OR IGNORE INTO properties (property_key, property_value, value_type) VALUES (?, ?, ?)',
+                    ('weight', weight_value, value_type)
+                )
+                
+                # Get the property_id
+                self.db.cursor.execute(
+                    'SELECT property_id FROM properties WHERE property_key = ? AND property_value = ? AND value_type = ?',
+                    ('weight', weight_value, value_type)
+                )
+                result = self.db.cursor.fetchone()
+                if result:
+                    property_id = result[0]
+                    # Link edge to property
+                    self.db.cursor.execute(
+                        'INSERT OR IGNORE INTO edge_properties (edge_id, property_id) VALUES (?, ?)',
+                        (edge_id, property_id)
+                    )
+            
+            self.db.conn.commit()
+        except sqlite3.IntegrityError as e:
+            logger.error(f"Error inserting edges batch: {e}")
+            self.db.conn.rollback()
+        except Exception as e:
+            logger.error(f"Unexpected error inserting edges batch: {e}")
+            self.db.conn.rollback()
 
 
 def main():
