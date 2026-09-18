@@ -95,6 +95,8 @@ def _load_portal_phenotype_registry(folder_path: str):
             trait_type = (row.get('trait_type') or '').strip()
             
             if phenotype_name and portal_id and trait_type:
+                if phenotype_name in portal_phenotype_data:
+                    print(f"Duplicate phenotype_name found in portal registry: {phenotype_name}", file=sys.stderr)
                 portal_phenotype_data[phenotype_name] = (portal_id, phenotype_name, trait_type)
                 if phenotype_name and ',' in phenotype_name:
                     mapped_phenotype_name = phenotype_name.replace(',', ';')
