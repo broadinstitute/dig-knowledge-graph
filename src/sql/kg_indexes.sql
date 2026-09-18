@@ -46,3 +46,5 @@ CREATE INDEX idx_identifiers_type_value ON identifiers(identifier_type, identifi
 CREATE INDEX idx_nodes_type ON nodes(type);
 -- Look up nodes by label (common query: find node by its label)
 CREATE INDEX idx_nodes_label ON nodes(label);
+-- Look up nodes by both type and label (common query: find a node by its type and label)
+CREATE INDEX idx_nodes_type_label ON nodes(type, label);

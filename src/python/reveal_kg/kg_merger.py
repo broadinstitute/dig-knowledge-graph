@@ -100,11 +100,14 @@ class KGMerger:
         normalizer: NodeNormalizer,
         sources: List[SourceSpec],
         debug_db_path: Optional[str] = None,
+        identifier_prefix_mapping: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
     ):
         self.db = db
         self.normalizer = normalizer
         self.sources = sources
         self.debug_db_path = debug_db_path
+        # identifier_type -> {prefix -> {mapped_type, mapped_prefix}}, see merge_config.json
+        self._identifier_prefix_mapping = identifier_prefix_mapping or {}
         self.stats: Dict[str, MergeStats] = {s.name: MergeStats(s.name) for s in sources}
 
         # identifier_value -> canonical_node_id
@@ -206,8 +209,21 @@ class KGMerger:
         for node_id, id_type, id_value in src_conn.execute(
             "SELECT node_id, identifier_type, identifier_value FROM identifiers"
         ):
+            id_type, id_value = self._remap_identifier(id_type, id_value)
             result.setdefault(node_id, []).append((id_type, id_value))
         return result
+
+    def _remap_identifier(self, id_type: str, id_value: str) -> Tuple[str, str]:
+        """Apply merge_config.json's identifier_prefix_mapping, e.g. ENTREZ: -> NCBIGene:."""
+        prefixes = self._identifier_prefix_mapping.get(id_type)
+        if not prefixes:
+            return id_type, id_value
+        for prefix, mapping in prefixes.items():
+            if id_value.startswith(prefix):
+                mapped_prefix = mapping.get("mapped_prefix", prefix)
+                mapped_type = mapping.get("mapped_type", id_type)
+                return mapped_type, mapped_prefix + id_value[len(prefix):]
+        return id_type, id_value
 
     def _find_canonical_match(
         self,

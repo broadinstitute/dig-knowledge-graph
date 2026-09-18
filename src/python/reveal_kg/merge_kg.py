@@ -92,6 +92,7 @@ def main():
     output_path = args.output or config.get("output", {}).get("path", "data/MergedKG/merged_kg.sqlite")
     debug_db_path = args.debug_db or config.get("debug_output", {}).get("path", "data/MergedKG/merge_debug.sqlite")
     type_equivalence_path = config.get("type_equivalence_file", "type_equivalence.json")
+    identifier_prefix_mapping = config.get("identifier_prefix_mapping", {})
 
     logger.info(f"Sources (priority order): {[s.name for s in sources]}")
     logger.info(f"Output database: {output_path}")
@@ -104,7 +105,10 @@ def main():
         db.initialize()
 
         try:
-            merger = KGMerger(db, normalizer, sources, debug_db_path=debug_db_path)
+            merger = KGMerger(
+                db, normalizer, sources, debug_db_path=debug_db_path,
+                identifier_prefix_mapping=identifier_prefix_mapping,
+            )
             merger.run()
 
             if args.build_index:

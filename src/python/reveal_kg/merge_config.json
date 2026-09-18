@@ -11,5 +11,13 @@
   "debug_output": {
     "path": "data/MergedKG/merge_debug.sqlite"
   },
-  "type_equivalence_file": "type_equivalence.json"
+  "type_equivalence_file": "type_equivalence.json",
+  "identifier_prefix_mapping": {
+    "ENTREZ": {
+      "ENTREZ:": {
+        "mapped_type": "NCBIGene",
+        "mapped_prefix": "NCBIGene:"
+      }
+    }
+  }
 }
