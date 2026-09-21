@@ -199,6 +199,138 @@ python biomarker_kg.py -i data/BiomarkerKG -o data/biomarker_kg.sqlite -O -X -v 
 - `-v`: Show debug output and per-batch logging
 - `-l biomarker.log`: Write logs to file
 
+## Knowledge Graph Merging
+
+This module includes a comprehensive merging tool for combining multiple knowledge graph SQLite databases into a single unified database.
+
+### Overview
+
+The merge tool (`merge_kg.py`) combines knowledge graphs from multiple sources (Data Distillery, Biomarker, REVEAL, etc.) into a single output database. The design uses a **two-pass approach** without cross-database SQL locking issues:
+
+- **Pass 1 (Nodes)**: Process all sources in priority order, merging nodes from different sources when they share identical identifiers and compatible types. All node-identity matching state is kept in-memory in Python.
+- **Pass 2 (Edges)**: Translate each edge's source/target node IDs through the Pass 1 mapping and copy edges into the output database.
+
+### Key Features
+
+- **Priority-based merging**: Earlier sources (higher priority) win label/type conflicts; losing values stored as `alt_label`/`alt_type` properties
+- **Flexible node matching**: Match nodes across sources by identifier values with type compatibility checking
+- **Type equivalence groups**: Configure which node types across different sources are semantically equivalent
+- **Debug tracking**: Optional debug database to inspect node merge mappings and mismatches
+- **Identifier mapping**: Remap identifiers across sources (e.g., ENTREZ → NCBIGene)
+- **No locks**: Each source database uses its own read-only connection; no ATTACH/DETACH conflicts
+
+### Configuration Files
+
+#### `merge_config.json`
+Defines the merge workflow:
+- **sources**: Ordered list of source databases (first = highest priority)
+- **output**: Output database path
+- **debug_output**: Optional debug database for merge statistics and mismatch details
+- **type_equivalence_file**: Path to type equivalence configuration
+- **identifier_prefix_mapping**: Rules for remapping identifier prefixes across sources
+
+Example structure:
+```json
+{
+  "sources": [
+    {"name": "data_distillery", "path": "data/DataDistilleryKG/CFDE-DD-KG.sqlite"},
+    {"name": "biomarker", "path": "data/BiomarkerKG/CFDE_Biomarker_KG.sqlite"},
+    {"name": "reveal", "path": "data/REVEALKG/CFDE_REVEAL_KG.sqlite"}
+  ],
+  "output": {"path": "data/MergedKG/merged_kg.sqlite"},
+  "type_equivalence_file": "type_equivalence.json"
+}
+```
+
+#### `type_equivalence.json`
+Maps raw node types from different sources to canonical equivalence groups. Types listed in the same group are treated as compatible and can be merged:
+```json
+{
+  "groups": {
+    "gene": [
+      {"type": "Gene"},
+      {"type": "NCBIGene"},
+      {"type": "gene"}
+    ],
+    "trait": [
+      {"type": "Trait"},
+      {"type": "Disease"},
+      {"type": "phenotype"}
+    ]
+  }
+}
+```
+
+### Usage
+
+Run the merge command with configuration options:
+
+```bash
+python merge_kg.py \
+  -c merge_config.json \
+  -O \
+  -X \
+  -v \
+  -l merge.log
+```
+
+**Command-line options:**
+- `-c, --config`: Path to merge configuration JSON file (default: `merge_config.json`)
+- `-o, --output`: Override output database path from config
+- `-b, --debug-db`: Generate debug database with merge statistics and node mapping details
+- `-O, --force-clean-db`: Delete and recreate output database (remove prior results)
+- `-X, --exclude-edges`: Skip Pass 2 (edge copying); useful for testing Pass 1 node merging only
+- `-v, --verbose`: Enable verbose logging
+- `-l, --log`: Path to log file for detailed merge process output
+
+### Merge Process Details
+
+**Node Merging Rules:**
+1. Nodes are matched by identical `identifiers.identifier_value` across sources
+2. Types must be compatible (as defined in `type_equivalence.json`)
+3. Nodes from the same source are never merged (each source's loader is assumed internally deduplicated)
+4. When nodes merge:
+   - Higher-priority source's label and type win
+   - Lower-priority source's label and type stored as `alt_label` and `alt_type` node properties
+   - All identifiers from both nodes are preserved
+
+**Edge Copying:**
+- All edges are copied unchanged from each source
+- Source/target node IDs are translated using the Pass 1 node mapping
+- Edge properties are copied
+- `properties` rows are deduplicated by (property_key, property_value, value_type) across sources
+
+**Output Database:**
+- Uses the standard `kg_schema.sql` schema (seven normalized tables: nodes, edges, identifiers, properties, node_properties, edge_properties, and indexes)
+- Contains merged nodes, all source edges, and unified property definitions
+- Optional debug database contains merge mappings and mismatch/ambiguity records separate from the output schema
+
+### Performance Considerations
+
+- Merge times depend on total nodes and edges across all sources
+- All node-identity matching state is held in memory during Pass 1; large merges may require significant RAM
+- Batch commits for edges (configurable batch size, default 50,000 rows)
+- Progress logging every 500,000 edges
+- Read-only connections to source databases avoid locking issues
+
+### Core Merge Components
+
+#### `merge_kg.py`
+Main CLI entry point for merging multiple source knowledge graph databases.
+
+#### `kg_merger.py`
+Cross-KG node merging engine with two-pass design:
+- Pass 1: Process all sources in priority order, matching and merging nodes by identifier values
+- Pass 2: Translate and copy edges using Pass 1 node mapping
+- Maintains all node/identifier/property state in-memory during Pass 1
+- Per-source merge statistics including node counts, merges, and mismatches
+
+#### `node_normalizer.py`
+Type-equivalence normalization for cross-KG node merging:
+- Loads type equivalence configuration from JSON
+- Resolves whether two node types are compatible
+- Supports singleton groups for unmapped types
+
 #### Production build (recommended)
 ```bash
 python biomarker_kg.py -i data/BiomarkerKG/processed -o data/BiomarkerKG/CFDE_Biomarker_KG.sqlite -O -l data/BiomarkerKG/CFDE_Biomarker_KG.log -X
