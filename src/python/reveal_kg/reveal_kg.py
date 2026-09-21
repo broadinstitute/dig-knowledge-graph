@@ -13,6 +13,7 @@ import uuid
 import yaml
 from argparse import ArgumentParser
 from pathlib import Path
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from kg_database import DatabaseManager
@@ -47,6 +48,10 @@ class RevealDataBuilder:
         
         self.node_id_mapping: Dict[Tuple[str, str], str] = {}  # (node_type, label) -> UUID
         self.node_cache: set = set()  # node_ids already in DB
+        self.portal_phenotype_data: Dict[str, Tuple[str, str, str]] = {}  # phenotype_name -> (portal_id, phenotype_name, trait_type)
+        self.portal_phenotype_file = config.get('portal_phenotype_registry_file', None)
+        self.portal_phenotype_mapping_file = config.get('portal_phenotype_mapping_file', None)
+        self.portal_phenotype_mapping: Dict[str, Dict[str, str]] = {}  # subject_id -> identifier -> predicate
 
     def load_folder(self, folder_path: str):
         """
@@ -58,25 +63,32 @@ class RevealDataBuilder:
             folder_path: Path to folder containing CSV files
         """
         folder = Path(folder_path)
+        mapping_folder = folder / 'mapping'
+        download_folder = folder / 'download'
         if not folder.exists():
             logger.error(f"Folder not found: {folder_path}")
             raise FileNotFoundError(f"Folder not found: {folder_path}")
 
         logger.info(f"Loading data from folder: {folder_path}")
 
+        # Load portal phenotype registry if configured
+        if self.portal_phenotype_file:
+            self._load_portal_phenotype_registry(mapping_folder)
+
+        # Load portal phenotype mapping if configured
+        if self.portal_phenotype_mapping_file:
+            self.portal_phenotype_mapping = self.parse_trait_mappings(mapping_folder)
+
         # Load nodes file
-        nodes_file = folder / self.nodes_file_name
+        nodes_file = mapping_folder / self.nodes_file_name
         if nodes_file.exists():
             logger.info(f"Loading nodes from {self.nodes_file_name}")
             self._load_nodes_from_file(str(nodes_file))
         else:
             logger.warning(f"Nodes file not found: {nodes_file.name}")
 
-        # Build mapping from (node_type, label) to UUIDs for edge loading
-        self._build_node_id_mapping()
-
         # Load edges file
-        edges_file = folder / self.edge_file_name
+        edges_file = download_folder / self.edge_file_name
         if edges_file.exists():
             logger.info(f"Loading edges from {self.edge_file_name}")
             self._load_edges_from_file(str(edges_file))
@@ -84,6 +96,100 @@ class RevealDataBuilder:
             logger.warning(f"Edges file not found: {edges_file.name}")
 
         logger.info("Data loading completed")
+
+    def _load_portal_phenotype_registry(self, folder_path: Path):
+        """
+        Load portal phenotype registry TSV file into memory.
+        Maps phenotype_name to (portal_id, phenotype_name, trait_type).
+        
+        Args:
+            folder_path: Path to the input folder containing the registry file
+        """
+        try:
+            if not self.portal_phenotype_file:
+                logger.warning("Portal phenotype registry file name not set in config")
+                return
+            
+            portal_file = folder_path / self.portal_phenotype_file
+            logger.info(f"Loading portal phenotype registry from {portal_file}")
+            if not portal_file.exists():
+                logger.warning(f"Portal phenotype registry file not found: {portal_file}")
+                return
+            
+            with open(portal_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f, delimiter='\t')
+                n = 0
+                for row in reader:
+                    label = (row.get('label') or '').strip()
+                    phenotype_name = (row.get('portal_phenotype_name') or '').strip()
+                    portal_id = (row.get('portal_id') or '').strip()
+                    trait_type = (row.get('trait_type') or '').strip()
+                    n += 1
+                    if phenotype_name and portal_id and trait_type:
+                        self.portal_phenotype_data[label] = (portal_id, phenotype_name, trait_type)
+            
+            logger.info(f"Loaded {len(self.portal_phenotype_data.keys())} phenotype records from portal registry (processed {n} rows)")
+        except Exception as e:
+            logger.error(f"Error loading portal phenotype registry: {e}")
+            raise
+
+    def parse_trait_mappings(self, folder_path: Path) -> Dict[str, Dict[str, str]]:
+        """
+        Parse SSSOM trait mapping file into dict keyed by subject_label.
+        
+        For each row:
+        - Include subject_id (replacing PORTAL: with KPN.TRAIT:) with empty string predicate
+        - Include object_id only if object_label matches subject_label (case insensitive), with predicate
+        
+        Args:
+            folder_path: Path to the input folder containing the mapping file
+            
+        Returns:
+            Dict[subject_id] = Dict[identifier] = predicate
+            (Duplicates automatically removed; each identifier appears once per trait)
+        """
+        if not self.portal_phenotype_mapping_file:
+            logger.warning("Portal phenotype mapping file not specified in the configuration.")
+            return {}
+        
+        trait_map = defaultdict(dict)
+        
+        mapping_file = folder_path / self.portal_phenotype_mapping_file
+        logger.info(f"Loading portal phenotype mapping from {mapping_file}")
+        with open(mapping_file, 'r', encoding='utf-8') as f:
+            # Skip comment lines, rewinding to the start of the first data line
+            while True:
+                pos = f.tell()
+                line = f.readline()
+                if not line.startswith('#'):
+                    f.seek(pos)
+                    break
+            
+            # Parse TSV data
+            reader = csv.DictReader(f, delimiter='\t')
+            
+            for row in reader:
+                subject_label = (row.get('subject_label') or '').strip()
+                subject_id = (row.get('subject_id') or '').strip()
+                object_id = (row.get('object_id') or '').strip()
+                object_label = (row.get('object_label') or '').strip()
+                predicate_id = (row.get('predicate_id') or '').strip()
+                
+                if not subject_label:
+                    continue
+                
+                # Replace PORTAL: with KPN.TRAIT:
+                if subject_id.startswith('PORTAL:'):
+                    subject_id = 'KPN.TRAIT:' + subject_id[7:]
+                
+                # Add object_id if object_label matches subject_label (case insensitive), with predicate
+                if object_label and subject_label.lower() == object_label.lower():
+                    trait_map[subject_id][object_id] = predicate_id
+
+        logger.info(f"Finished loading portal phenotype mapping from {mapping_file}")
+        logger.info(f"Loaded portal phenotype mapping for {len(trait_map.keys())} entries")
+        return trait_map
+
 
     def _extract_iri_prefix(self, iri: str) -> str:
         """
@@ -188,6 +294,28 @@ class RevealDataBuilder:
                 
                 # Generate UUID for this node
                 node_uuid = str(uuid.uuid4())
+                key = (str(node_type), str(label)) 
+                self.node_id_mapping[key] = node_uuid
+                curies = set()
+                
+                # Enrich "Trait" nodes with portal phenotype data
+                if node_type == "Trait" and label in self.portal_phenotype_data:
+                    portal_id, phenotype_name, trait_type = self.portal_phenotype_data[label]
+                    # Convert portal_id prefix from PORTAL to KPN.TRAIT
+                    kpn_trait_id = portal_id.replace("PORTAL:", "KPN.TRAIT:")
+                    # Add identifier with converted prefix
+                    identifiers_batch.append((node_uuid, "KPN.TRAIT", kpn_trait_id))
+                    # Add identifiers for the portal phenotype mapping
+                    for identifier, _ in self.portal_phenotype_mapping.get(kpn_trait_id, {}).items():
+                        prefix = identifier.split(':')[0] if ':' in identifier else ''
+                        identifiers_batch.append((node_uuid, prefix, identifier))
+                        curies.add(identifier)
+                    # Replace node type with trait_type
+                    node_type = trait_type
+                    # Update the label to the canonical phenotype name from the portal registry
+                    label = phenotype_name
+                elif node_type == "Trait" and label not in self.portal_phenotype_data:
+                    logger.warning(f"Trait node with label '{label}' has no match in portal_phenotype_registry.tsv")
                 
                 batch.append((node_uuid, node_type, label))
                 identifiers_batch.append((node_uuid, mapping_status, node_iri))
@@ -197,7 +325,9 @@ class RevealDataBuilder:
                     curie_info = self._generate_curie(node_iri)
                     if curie_info:
                         prefix, curie = curie_info
-                        identifiers_batch.append((node_uuid, prefix, curie))
+                        if curie not in curies:
+                            identifiers_batch.append((node_uuid, prefix, curie))
+                            curies.add(curie)
                                 
                 self.node_cache.add(node_iri)
                 count += 1

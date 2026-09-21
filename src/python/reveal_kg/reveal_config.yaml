@@ -2,6 +2,8 @@ nodes_file_name: "node_mapping_summary.csv"
 edge_file_name: "cfde_kg_v1.csv"
 batch_size: 50000
 edge_sab: "REVEAL"
+portal_phenotype_registry_file: "merged_trait_mapping.tsv"
+portal_phenotype_mapping_file: "portal_phenotype_mappings.sssom.tsv"
 
 # URL to prefix mapping for identifiers without underscore separator
 url_prefix_mapping:

@@ -6,6 +6,7 @@ A Python utility to download, extract, and build SQLite knowledge graph database
 
 Currently supported:
 - **Data Distillery Knowledge Graph**: CFDE (Common Fund Data Ecosystem) REVEAL data sources
+- **REVEAL Knowledge Graph**: REVEAL portal node/edge mappings with phenotype trait enrichment
 - **Biomarker Knowledge Graph**: Biomarker-specific CSV data
 
 Future support:
@@ -18,8 +19,9 @@ The Data Distillery automates the process of:
 2. **Extracting** and validating CSV files
 3. **Building** SQLite databases with normalized schemas for nodes, edges, and cross-references
 
-Two independent pipelines are provided:
+Three independent pipelines are provided:
 - **CFDE Data Distillery**: Download and build knowledge graph from Common Fund data sources (SPARC, etc.)
+- **REVEAL KG Loader**: Load pre-mapped REVEAL node/edge CSVs (with portal phenotype/trait enrichment) into a knowledge graph database
 - **Biomarker KG Loader**: Load pre-downloaded biomarker CSV data into knowledge graph database
 
 ## Components
@@ -57,6 +59,32 @@ Configuration file for special processing of CFDE identifier values:
 - Warns if decimal part is non-zero (e.g., `916.5` instead of `916.0`)
 - Example: UBERON and FMA identifiers have `.0` suffix in CSV but should be stored as integers
 - Also specifies exclusion rules to skip certain identifier types per SAB
+
+### REVEAL Knowledge Graph
+
+#### `reveal_kg.py`
+Main CLI entry point for loading REVEAL knowledge graph CSV data into the normalized SQLite database:
+- Loads nodes from `mapping/node_mapping_summary.csv` and edges from `download/cfde_kg_v1.csv` under the input folder
+- Generates a UUID for every node and keys an internal `(node_type, label)` → UUID map used to resolve edge endpoints
+- Optionally enriches `Trait` nodes using a portal phenotype registry and an SSSOM trait mapping file (see below)
+- Derives CURIEs for external node IRIs (e.g., `http://purl.obolibrary.org/obo/HP_0000539` → `HP:0000539`) using the `url_prefix_mapping` table in `reveal_config.yaml`
+- Stores edge `Weight` values as normalized edge properties
+- Uses `DatabaseManager` for schema setup and batch-commits nodes/edges for efficient loading
+
+#### `reveal_config.yaml`
+Configuration for the REVEAL KG loader:
+- **nodes_file_name** / **edge_file_name**: CSV file names to load (default `node_mapping_summary.csv` and `cfde_kg_v1.csv`)
+- **batch_size**: Number of rows per batch commit (default 50000)
+- **edge_sab**: Default data source abbreviation for edges (`REVEAL`)
+- **portal_phenotype_registry_file** / **portal_phenotype_mapping_file**: Optional filenames (relative to the `mapping/` subfolder) used to enrich `Trait` nodes with portal phenotype identifiers and trait types
+- **url_prefix_mapping**: Maps base IRI namespaces (e.g., `http://purl.obolibrary.org/obo/HP_`) to CURIE prefixes (e.g., `HP`) for identifier generation
+
+#### `reveal_trait_mappings.py`
+Standalone analysis script (not part of the main load pipeline) for exploring and reporting on trait/phenotype mapping coverage:
+- Parses the SSSOM portal phenotype mapping file into a subject → identifier → predicate map
+- Loads the portal phenotype registry and AI-assisted mapping suggestions (`claude_mapped_nodes.tsv`)
+- Cross-references `Trait` nodes in `node_mapping_summary.csv` against the registry to report exact, comma/semicolon-normalized, AI-assisted, and unmapped matches
+- Prints a TSV mapping report to stdout and summary counts/diagnostics to stderr
 
 ### Biomarker Knowledge Graph
 
@@ -180,6 +208,76 @@ Complete end-to-end build with all features:
 - `-o data/DataDistilleryKG/CFDE-DD-KG.sqlite`: Output to production database file
 - `-l data/DataDistilleryKG/CFDE-DD-KG.log`: Log all operations to file
 - `-X`: Create query indexes after all data loads (improves performance)
+
+### REVEAL Knowledge Graph
+
+#### Basic: load REVEAL data with clean database
+```bash
+python reveal_kg.py -i data/REVEALKG -o data/reveal_kg.sqlite -O
+```
+- `-i data/REVEALKG`: Input folder containing `mapping/node_mapping_summary.csv` and `download/cfde_kg_v1.csv`
+- `-o data/reveal_kg.sqlite`: Output database file
+- `-O`: Delete old database and start fresh
+
+#### With indexes and verbose logging
+```bash
+python reveal_kg.py -i data/REVEALKG -o data/reveal_kg.sqlite -O -X -v -l reveal.log
+```
+- `-X`: Create query performance indexes after loading
+- `-v`: Enable verbose (debug) logging
+- `-l reveal.log`: Write logs to file
+
+#### Production build (recommended)
+```bash
+python reveal_kg.py -i data/REVEALKG -o data/REVEALKG/CFDE_REVEAL_KG.sqlite -O -l data/REVEALKG/CFDE_REVEAL_KG.log -X
+```
+Complete production build with all features:
+- `-i data/REVEALKG`: Load from the REVEAL data folder (expects `mapping/` and `download/` subfolders)
+- `-o data/REVEALKG/CFDE_REVEAL_KG.sqlite`: Output to production database file
+- `-O`: Delete old database and start fresh
+- `-l data/REVEALKG/CFDE_REVEAL_KG.log`: Log all operations to file
+- `-X`: Create query indexes after loading (improves performance)
+
+#### Folder Layout (REVEAL KG)
+
+`reveal_kg.py` expects the input folder to contain two subfolders:
+- **`mapping/`**: `node_mapping_summary.csv` plus optional phenotype enrichment files (`merged_trait_mapping.tsv`, `portal_phenotype_mappings.sssom.tsv`)
+- **`download/`**: `cfde_kg_v1.csv` edge file
+
+#### Trait Enrichment (REVEAL KG)
+
+When `node_type` is `Trait`, the loader looks up the node's `label` in the portal phenotype registry:
+- If matched, the node's identifier is stored with prefix `KPN.TRAIT` (converted from the registry's `PORTAL:` prefix), the node's `type` is replaced with the registry's `trait_type`, and the label is replaced with the canonical `portal_phenotype_name`
+- Additional identifiers from the SSSOM trait mapping file are attached when their `object_label` matches the trait's `subject_label`
+- Traits with no match in the registry are logged as warnings but still loaded using their original label/type
+
+#### CSV Format (REVEAL KG)
+
+**Node file (`mapping/node_mapping_summary.csv`)**
+- **node_iri**: Node IRI/identifier (used to derive a CURIE unless `mapping_status` is `local_cfde_reveal`)
+- **node_type**: Node classification (e.g., `Trait`, `Gene`)
+- **label**: Human-readable node label
+- **mapping_status**: Identifier type/source used when storing the raw `node_iri` as an identifier
+
+Example:
+```
+node_iri,node_type,label,mapping_status
+http://purl.obolibrary.org/obo/HP_0000539,Trait,Abnormality of the eye,local_cfde_reveal
+```
+
+**Edge file (`download/cfde_kg_v1.csv`)**
+- **Source** / **Source_Type**: Source node label and type (looked up against loaded nodes)
+- **Target** / **Target_Type**: Target node label and type (looked up against loaded nodes)
+- **Edge_Type**: Edge predicate
+- **Weight** (optional): Numeric edge weight, stored as an edge property
+
+Example:
+```
+Source,Source_Type,Target,Target_Type,Edge_Type,Weight
+TP53,Gene,Abnormality of the eye,Trait,associated_with,0.87
+```
+
+**Important**: Edges are only created when both the source and target `(type, label)` pairs match nodes already loaded from `node_mapping_summary.csv`; unmatched edges are skipped and logged.
 
 ### Biomarker Knowledge Graph
 
@@ -407,6 +505,17 @@ HGNC:1234,CHEBI:15377,associated_with,BIOMARKER
 | `-I` | `--all-folders` | Process all folders in download directory | False |
 | `-l` | `--log` | Log file path (optional) | None |
 | `-v` | `--verbose` | Enable debug logging (per-row commits) | False |
+
+### REVEAL Knowledge Graph (reveal_kg.py)
+
+| Flag | Long | Description | Default |
+|------|------|-------------|---------|
+| `-i` | `--input-folder` | Input folder with `mapping/` and `download/` subfolders | *required* |
+| `-o` | `--output` | Output SQLite database file | `data/reveal_kg.sqlite` |
+| `-O` | `--force-clean-db` | Remove old database and start fresh | False |
+| `-X` | `--index` | Create query performance indexes after loading | False |
+| `-l` | `--log` | Log file path (optional) | None |
+| `-v` | `--verbose` | Enable verbose logging | False |
 
 ### Biomarker Knowledge Graph (biomarker_kg.py)
 
