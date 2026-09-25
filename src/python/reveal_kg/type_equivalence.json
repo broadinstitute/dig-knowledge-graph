@@ -1,0 +1,50 @@
+{
+  "description": "Type-equivalence groups for cross-KG node merging. Each group lists raw nodes.type values (case-sensitive, exactly as they appear in the source databases) considered compatible when deciding whether two nodes from DIFFERENT source KGs represent the same real-world entity. A raw type not listed here falls back to exact case-insensitive string matching as its own singleton group - it will never merge with a differently-spelled type from another KG. 'source' is informational only (which KG the raw value was observed in); it does not restrict matching.",
+  "groups": {
+    "gene": [
+      {"type": "Gene", "source": "data_distillery"},
+      {"type": "Gene", "source": "reveal"},
+      {"type": "gene", "source": "biomarker"}
+    ],
+    "disease_or_phenotype": [
+      {"type": "Disease or Phenotype", "source": "data_distillery"},
+      {"type": "disease", "source": "reveal"},
+      {"type": "rare_disease", "source": "reveal"},
+      {"type": "phenotype", "source": "reveal"},
+      {"type": "Trait", "source": "reveal"},
+      {"type": "measurement", "source": "reveal"},
+      {"type": "stratified", "source": "reveal"},
+      {"type": "disease", "source": "biomarker"}
+    ],
+    "protein": [
+      {"type": "Protein", "source": "data_distillery"},
+      {"type": "Glycoprotein", "source": "data_distillery"},
+      {"type": "Isoform", "source": "data_distillery"},
+      {"type": "protein", "source": "biomarker"}
+    ],
+    "chemical": [
+      {"type": "Compound", "source": "data_distillery"},
+      {"type": "Metabolite", "source": "data_distillery"},
+      {"type": "chemical", "source": "biomarker"}
+    ],
+    "anatomical_structure": [
+      {"type": "Anatomy", "source": "data_distillery"},
+      {"type": "anatomical_structure", "source": "biomarker"}
+    ],
+    "genetic_variant": [
+      {"type": "CLINGEN ALLELE REGISTRY", "source": "data_distillery"},
+      {"type": "genetic_variant", "source": "biomarker"}
+    ],
+    "glycan": [
+      {"type": "Glytoucan", "source": "data_distillery"},
+      {"type": "glycan", "source": "biomarker"}
+    ]
+  },
+  "ungrouped_notes": {
+    "comment": "Raw types NOT listed above are intentionally left ungrouped (no automatic cross-KG merge) - they still load fine, they just won't match a differently-named type in another KG.",
+    "sab_fallback_types_data_distillery": ["GTEXEXP", "GTEXEQTL", "HSCLO", "KFGENEBIN", "MSIGDB", "MOTRPAC", "KFPT", "ILX", "EXPBINS", "NIFSTD", "GTEXPVALUEBIN", "KFCOHORT", "PATO", "GO", "SO"],
+    "reveal_study_metadata": ["Gene_Set", "Factor", "adjusted", "interaction", "subgroup", "composite"],
+    "data_distillery_structural_or_evidence_records": ["Regulatory Element Activity", "exRNA Loci", "ENCODE CCRE", "ENCODE CCRE Data Matrix", "4DN Loop", "4DN QVal Bin", "4DN Dataset", "4DN File", "GP ID2PRO", "GlyGen Location", "Glycosylation Site", "GlyGen src", "Glycan Motif", "Glycosylation", "Glycosyltransferase Reaction", "GlyGen Residue", "Glycoprotein Citation", "Glycoprotein Evidence", "Taxon", "Amino Acid", "Assay", "Biofluid", "Sex"],
+    "biomarker_only_concepts": ["biomarker", "biomarker_role", "ncit_concept", "transcript", "cell"]
+  }
+}

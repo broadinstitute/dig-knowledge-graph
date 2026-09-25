@@ -1,0 +1,23 @@
+{
+  "description": "Ordered list of source KG databases to merge, HIGHEST PRIORITY FIRST. When nodes from two sources merge, the earlier (higher-priority) source's label/type wins; the other source's values are kept as alt_label/alt_type node properties instead of being discarded.",
+  "sources": [
+    {"name": "data_distillery", "path": "data/DataDistilleryKG/CFDE-DD-KG.sqlite"},
+    {"name": "biomarker", "path": "data/BiomarkerKG/CFDE_Biomarker_KG.sqlite"},
+    {"name": "reveal", "path": "data/REVEALKG/CFDE_REVEAL_KG.sqlite"}
+  ],
+  "output": {
+    "path": "data/MergedKG/merged_kg.sqlite"
+  },
+  "debug_output": {
+    "path": "data/MergedKG/merge_debug.sqlite"
+  },
+  "type_equivalence_file": "type_equivalence.json",
+  "identifier_prefix_mapping": {
+    "ENTREZ": {
+      "ENTREZ:": {
+        "mapped_type": "NCBIGene",
+        "mapped_prefix": "NCBIGene:"
+      }
+    }
+  }
+}

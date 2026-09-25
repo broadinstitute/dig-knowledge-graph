@@ -23,7 +23,6 @@ CREATE INDEX idx_node_properties_property ON node_properties(property_id);
 CREATE INDEX idx_edge_properties_property ON edge_properties(property_id);
 
 -- Look up properties BY NODE/EDGE (find all properties of a node/edge)
--- CRITICAL: These were missing and caused full table scans
 CREATE INDEX idx_node_properties_node ON node_properties(node_id);
 CREATE INDEX idx_edge_properties_edge ON edge_properties(edge_id);
 
@@ -33,7 +32,6 @@ CREATE INDEX idx_edge_properties_edge ON edge_properties(edge_id);
 -- ============================================================================
 
 -- Look up identifiers by node (most common query: find all identifiers for a node)
--- CRITICAL: This was missing - caused full table scan of identifiers table
 CREATE INDEX idx_identifiers_node_id ON identifiers(node_id);
 
 -- Look up identifiers by type and value (cross-reference lookups)
@@ -46,3 +44,7 @@ CREATE INDEX idx_identifiers_type_value ON identifiers(identifier_type, identifi
 
 -- Filter nodes by type
 CREATE INDEX idx_nodes_type ON nodes(type);
+-- Look up nodes by label (common query: find node by its label)
+CREATE INDEX idx_nodes_label ON nodes(label);
+-- Look up nodes by both type and label (common query: find a node by its type and label)
+CREATE INDEX idx_nodes_type_label ON nodes(type, label);
